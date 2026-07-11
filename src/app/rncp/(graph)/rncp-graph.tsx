@@ -188,6 +188,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
+  const [spread, setSpread] = useState(1);
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [selectedTitle, setSelectedTitle] = useState<number | null>(null);
   const [titleMode, setTitleMode] = useState<"focus" | "info">("focus");
@@ -203,6 +204,10 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     oy: number;
     moved: boolean;
   } | null>(null);
+
+  // Spread scales content radii outward from the donut edge (separates nodes)
+  // without resizing the donut itself.
+  const rScale = (r: number) => DONUT_OUTER + (r - DONUT_OUTER) * spread;
 
   const clampPan = (p: { x: number; y: number }, z: number) => {
     const limit = PAN_LIMIT + (SIZE * (z - 1)) / 2;
@@ -254,6 +259,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     const sweep = (Math.PI * 2) / count;
     const titlePad = Math.min(0.08, sweep * 0.1);
     const sectionGap = 0.03;
+    const rs = (r: number) => DONUT_OUTER + (r - DONUT_OUTER) * spread;
 
     const titlesPerProject = new Map<number, Set<number>>();
     titles.forEach((title, ti) => {
@@ -314,7 +320,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
         const totalCount = Math.max(1, projects.length);
 
         let laneCursor = s0 + lanePad;
-        let outerR = TIER_BASE;
+        let outerR = rs(TIER_BASE);
 
         types.forEach((type) => {
           const laneProjects = (byType.get(type) ?? [])
@@ -340,7 +346,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
           }[] = [];
 
           for (const [tier, tierProjects] of byTier) {
-            const radius = tierRadius(tier);
+            const radius = rs(tierRadius(tier));
             outerR = Math.max(outerR, radius);
             const innerPad = Math.min(0.008, (la1 - la0) * 0.12);
             const lone = tierProjects.length <= 1;
@@ -369,11 +375,13 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
               const kids = project.children ?? [];
               if (kids.length > 0) {
-                const spread = Math.min(0.06, (la1 - la0) * 0.6);
+                const kidSpread = Math.min(0.06, (la1 - la0) * 0.6);
                 kids.forEach((child, ci) => {
                   const ca =
-                    angle - spread / 2 + (spread * (ci + 0.5)) / kids.length;
-                  const cp = polar(radius + TIER_GAP * 0.5, ca);
+                    angle -
+                    kidSpread / 2 +
+                    (kidSpread * (ci + 0.5)) / kids.length;
+                  const cp = polar(radius + TIER_GAP * 0.5 * spread, ca);
                   children.push({
                     key: `${reqKey}:${project.id}:${child.id}:${ci}`,
                     titleIndex,
@@ -437,7 +445,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     });
 
     return { nodes, children, requirements, edges, segments };
-  }, [titles]);
+  }, [titles, spread]);
 
   const completeByReq = useMemo(() => {
     const map: Record<string, boolean> = {};
@@ -817,8 +825,8 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
                 return (
                   <g key={`info-gauge-${req.key}`}>
-                    {gauge(258, realP, simP, `gp-${req.key}`)}
-                    {needX > 0 && gauge(222, realX, simX, `gx-${req.key}`)}
+                    {gauge(rScale(258), realP, simP, `gp-${req.key}`)}
+                    {needX > 0 && gauge(rScale(222), realX, simX, `gx-${req.key}`)}
                   </g>
                 );
               })}
@@ -834,7 +842,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                 const color =
                   SEGMENT_COLORS[req.titleIndex % SEGMENT_COLORS.length];
                 const needX = option.experience;
-                const namePos = polar(306, (req.a0 + req.a1) / 2);
+                const namePos = polar(rScale(306), (req.a0 + req.a1) / 2);
 
                 return (
                   <g key={`info-text-${req.key}`}>
@@ -920,6 +928,23 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
         >
           <Scan className="size-4" />
         </button>
+      </div>
+
+      {/* Spread slider: separates the nodes (bigger graph) without zooming. */}
+      <div className="absolute top-32 right-3 flex flex-col items-center gap-1 rounded-md border bg-background/90 px-1.5 py-2 shadow-sm">
+        <input
+          type="range"
+          min={0.6}
+          max={2.6}
+          step={0.05}
+          value={spread}
+          onChange={(e) => setSpread(Number(e.target.value))}
+          aria-label="Spread nodes"
+          title="Spread nodes apart"
+          className="h-28 w-2 cursor-pointer accent-primary"
+          style={{ writingMode: "vertical-lr", direction: "rtl" }}
+        />
+        <span className="text-[10px] text-muted-foreground">spread</span>
       </div>
 
       {selectedName && (
