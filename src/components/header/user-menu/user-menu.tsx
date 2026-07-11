@@ -20,7 +20,7 @@ export function UserMenu({ session }: UserMenuProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger>
-        <UserAvatar imageUrl={session.user.image as string} />
+        <UserAvatar imageUrl={session.user?.image as string} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuItem className="p-0">

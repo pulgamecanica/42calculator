@@ -82,6 +82,9 @@ if (isDevelopment) {
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   basePath: "/auth",
+  // Self-hosted behind a reverse proxy (Coolify/Traefik): trust the
+  // X-Forwarded-Host header so Auth.js doesn't reject the request host.
+  trustHost: true,
   pages: {
     signIn: "/",
     signOut: "/",
