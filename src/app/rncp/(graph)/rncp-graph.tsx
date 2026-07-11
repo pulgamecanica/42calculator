@@ -36,6 +36,9 @@ const SEGMENT_COLORS = [
 
 const TYPE_ORDER = ["project", "piscine", "exam"] as const;
 type ProjectType = (typeof TYPE_ORDER)[number];
+// Piscine projects report 0 XP even though their exercises do grant XP. When
+// "fix piscines" is on we pretend they are worth this much (graph only).
+const PISCINE_XP = 11000;
 
 function projectType(project: FortyTwoProject): ProjectType {
   const s = project.name.toLowerCase();
@@ -145,6 +148,7 @@ function optionProgress(
   option: FortyTwoTitleOption,
   cursus: FortyTwoCursus,
   planned: Record<number, unknown>,
+  xpOf: (project: FortyTwoProject) => number = (p) => p.experience || 0,
 ): OptionProgress {
   let projects = 0;
   let simulatedProjects = 0;
@@ -154,10 +158,10 @@ function optionProgress(
     const userProject = cursus.projects[project.id];
     if (userProject?.is_validated) {
       projects++;
-      experience += (project.experience || 0) * ((userProject.mark || 0) / 100);
+      experience += xpOf(project) * ((userProject.mark || 0) / 100);
     } else if (planned[project.id]) {
       simulatedProjects++;
-      simulatedExperience += project.experience || 0;
+      simulatedExperience += xpOf(project);
     }
   }
   const isComplete =
@@ -177,8 +181,9 @@ function isOptionComplete(
   option: FortyTwoTitleOption,
   cursus: FortyTwoCursus,
   planned: Record<number, unknown>,
+  xpOf?: (project: FortyTwoProject) => number,
 ): boolean {
-  return optionProgress(option, cursus, planned).isComplete;
+  return optionProgress(option, cursus, planned, xpOf).isComplete;
 }
 
 export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
@@ -189,6 +194,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [spread, setSpread] = useState(1);
+  const [fixPiscines, setFixPiscines] = useState(true);
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [selectedTitle, setSelectedTitle] = useState<number | null>(null);
   const [titleMode, setTitleMode] = useState<"focus" | "info">("focus");
@@ -208,6 +214,12 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
   // Spread scales content radii outward from the donut edge (separates nodes)
   // without resizing the donut itself.
   const rScale = (r: number) => DONUT_OUTER + (r - DONUT_OUTER) * spread;
+
+  // Effective XP used across the graph (applies the piscine fix when enabled).
+  const xpOf = (project: FortyTwoProject) =>
+    fixPiscines && projectType(project) === "piscine"
+      ? PISCINE_XP
+      : project.experience || 0;
 
   const clampPan = (p: { x: number; y: number }, z: number) => {
     const limit = PAN_LIMIT + (SIZE * (z - 1)) / 2;
@@ -333,7 +345,9 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
           // group lane projects by XP tier (same tier → same radius)
           const byTier = new Map<number, FortyTwoProject[]>();
           for (const p of laneProjects) {
-            const tier = xpTier(p.experience || 0);
+            const xp =
+              fixPiscines && type === "piscine" ? PISCINE_XP : p.experience || 0;
+            const tier = xpTier(xp);
             if (!byTier.has(tier)) byTier.set(tier, []);
             byTier.get(tier)?.push(p);
           }
@@ -445,17 +459,21 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     });
 
     return { nodes, children, requirements, edges, segments };
-  }, [titles, spread]);
+  }, [titles, spread, fixPiscines]);
 
   const completeByReq = useMemo(() => {
     const map: Record<string, boolean> = {};
+    const localXpOf = (project: FortyTwoProject) =>
+      fixPiscines && projectType(project) === "piscine"
+        ? PISCINE_XP
+        : project.experience || 0;
     titles.forEach((title, ti) => {
       title.options.forEach((option, oi) => {
-        map[`${ti}:${oi}`] = isOptionComplete(option, cursus, planned);
+        map[`${ti}:${oi}`] = isOptionComplete(option, cursus, planned, localXpOf);
       });
     });
     return map;
-  }, [titles, cursus, planned]);
+  }, [titles, cursus, planned, fixPiscines]);
 
   const selectedNodes = selectedProject
     ? nodes.filter((n) => n.projectId === selectedProject)
@@ -516,7 +534,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
             if (!option) return null;
             const complete = completeByReq[req.key];
             const color = SEGMENT_COLORS[req.titleIndex % SEGMENT_COLORS.length];
-            const prog = optionProgress(option, cursus, planned);
+            const prog = optionProgress(option, cursus, planned, xpOf);
             const projFrac = Math.min(
               1,
               (prog.projects + prog.simulatedProjects) /
@@ -765,7 +783,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
               .map((req) => {
                 const option = titles[req.titleIndex]?.options[req.optionIndex];
                 if (!option) return null;
-                const prog = optionProgress(option, cursus, planned);
+                const prog = optionProgress(option, cursus, planned, xpOf);
                 const color =
                   SEGMENT_COLORS[req.titleIndex % SEGMENT_COLORS.length];
                 const pad = (req.a1 - req.a0) * 0.06;
@@ -838,7 +856,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
               .map((req) => {
                 const option = titles[req.titleIndex]?.options[req.optionIndex];
                 if (!option) return null;
-                const prog = optionProgress(option, cursus, planned);
+                const prog = optionProgress(option, cursus, planned, xpOf);
                 const color =
                   SEGMENT_COLORS[req.titleIndex % SEGMENT_COLORS.length];
                 const needX = option.experience;
@@ -945,6 +963,23 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
           style={{ writingMode: "vertical-lr", direction: "rtl" }}
         />
         <span className="text-[10px] text-muted-foreground">spread</span>
+        <div className="my-1 h-px w-full bg-border" />
+        <button
+          type="button"
+          onClick={() => setFixPiscines((v) => !v)}
+          aria-pressed={fixPiscines}
+          title="Treat piscines as 11,000 XP (graph only)"
+          className={cn(
+            "rounded px-1 py-0.5 text-center text-[9px] font-medium leading-tight",
+            fixPiscines
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-muted",
+          )}
+        >
+          fix
+          <br />
+          piscines
+        </button>
       </div>
 
       {selectedName && (
