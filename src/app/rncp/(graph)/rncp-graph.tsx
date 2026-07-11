@@ -8,7 +8,8 @@ import type {
   FortyTwoTitle,
   FortyTwoTitleOption,
 } from "@/types/forty-two";
-import { useMemo, useRef, useState } from "react";
+import { Minus, Plus, Scan } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PolarPath } from "./polar-path";
 
 const SIZE = 1000;
@@ -21,6 +22,8 @@ const SLOT = 0.07; // angular spacing between nodes on a level (rad)
 const NODE_R = 8;
 const CHILD_R = 4;
 const PAN_LIMIT = 600;
+const ZOOM_MIN = 0.6;
+const ZOOM_MAX = 5;
 
 const SEGMENT_COLORS = [
   "#f5c542",
@@ -115,8 +118,14 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
   const toggle = usePlannedProjects((state) => state.toggle);
 
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [selectedTitle, setSelectedTitle] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const panRef = useRef(pan);
+  const zoomRef = useRef(zoom);
+  panRef.current = pan;
+  zoomRef.current = zoom;
   const drag = useRef<{
     px: number;
     py: number;
@@ -124,6 +133,51 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     oy: number;
     moved: boolean;
   } | null>(null);
+
+  const clampPan = (p: { x: number; y: number }, z: number) => {
+    const limit = PAN_LIMIT + (SIZE * (z - 1)) / 2;
+    return {
+      x: Math.max(-limit, Math.min(limit, p.x)),
+      y: Math.max(-limit, Math.min(limit, p.y)),
+    };
+  };
+
+  const zoomAt = (svgX: number, svgY: number, factor: number) => {
+    const z0 = zoomRef.current;
+    const z1 = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z0 * factor));
+    if (z1 === z0) return;
+    const p0 = panRef.current;
+    setPan(
+      clampPan(
+        {
+          x: svgX - (svgX - p0.x) * (z1 / z0),
+          y: svgY - (svgY - p0.y) * (z1 / z0),
+        },
+        z1,
+      ),
+    );
+    setZoom(z1);
+  };
+
+  // Native wheel listener (non-passive) so we can zoom toward the cursor
+  // without scrolling the page.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      const toSvg = SIZE / rect.width;
+      zoomAt(
+        (e.clientX - rect.left) * toSvg,
+        (e.clientY - rect.top) * toSvg,
+        e.deltaY < 0 ? 1.12 : 1 / 1.12,
+      );
+    };
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Deterministic (idempotent) grid layout — depends only on the static
   // titles/cursus, so toggling a project only recolours.
@@ -284,8 +338,12 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     const dy = e.clientY - drag.current.py;
     if (Math.abs(dx) + Math.abs(dy) > 3) drag.current.moved = true;
     const scale = SIZE / (e.currentTarget.clientWidth || SIZE);
-    const clamp = (v: number) => Math.max(-PAN_LIMIT, Math.min(PAN_LIMIT, v));
-    setPan({ x: clamp(drag.current.ox + dx * scale), y: clamp(drag.current.oy + dy * scale) });
+    setPan(
+      clampPan(
+        { x: drag.current.ox + dx * scale, y: drag.current.oy + dy * scale },
+        zoom,
+      ),
+    );
   }
   function onPointerUp() {
     if (drag.current && !drag.current.moved) clearSelection();
@@ -295,6 +353,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
   return (
     <div className="relative w-full overflow-hidden rounded-lg border bg-card/20">
       <svg
+        ref={svgRef}
         viewBox={`0 0 ${SIZE} ${SIZE}`}
         className="h-[74vh] max-h-[880px] w-full cursor-grab touch-none select-none active:cursor-grabbing"
         onPointerDown={onPointerDown}
@@ -304,7 +363,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
         role="img"
         aria-label="RNCP certificates graph"
       >
-        <g transform={`translate(${pan.x} ${pan.y})`}>
+        <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
           {/* Serpentine spine per option (snakes out level by level). */}
           {spines.map((s) => {
             const complete = completeByAnchor[s.anchorKey];
@@ -443,6 +502,37 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
           })}
         </g>
       </svg>
+
+      {/* Zoom controls. */}
+      <div className="absolute top-3 right-3 flex flex-col overflow-hidden rounded-md border bg-background/90 shadow-sm">
+        <button
+          type="button"
+          aria-label="Zoom in"
+          className="flex size-8 items-center justify-center hover:bg-muted"
+          onClick={() => zoomAt(SIZE / 2, SIZE / 2, 1.25)}
+        >
+          <Plus className="size-4" />
+        </button>
+        <button
+          type="button"
+          aria-label="Zoom out"
+          className="flex size-8 items-center justify-center border-t hover:bg-muted"
+          onClick={() => zoomAt(SIZE / 2, SIZE / 2, 1 / 1.25)}
+        >
+          <Minus className="size-4" />
+        </button>
+        <button
+          type="button"
+          aria-label="Reset view"
+          className="flex size-8 items-center justify-center border-t hover:bg-muted"
+          onClick={() => {
+            setZoom(1);
+            setPan({ x: 0, y: 0 });
+          }}
+        >
+          <Scan className="size-4" />
+        </button>
+      </div>
 
       {selectedName && (
         <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-full border bg-background/90 px-3 py-1 font-medium text-sm shadow-sm">
