@@ -80,6 +80,8 @@ interface ChildNode {
 interface Requirement {
   key: string;
   titleIndex: number;
+  optionIndex: number;
+  name: string;
   a0: number;
   a1: number;
   innerR: number;
@@ -118,27 +120,60 @@ function annularSector(r0: number, r1: number, a0: number, a1: number): string {
   return `M ${p0o.x} ${p0o.y} A ${r1} ${r1} 0 ${large} 1 ${p1o.x} ${p1o.y} L ${p1i.x} ${p1i.y} A ${r0} ${r0} 0 ${large} 0 ${p0i.x} ${p0i.y} Z`;
 }
 
-function isOptionComplete(
+function arcPath(radius: number, a0: number, a1: number): string {
+  const p0 = polar(radius, a0);
+  const p1 = polar(radius, a1);
+  const large = Math.abs(a1 - a0) > Math.PI ? 1 : 0;
+  const sweep = a1 >= a0 ? 1 : 0;
+  return `M ${p0.x} ${p0.y} A ${radius} ${radius} 0 ${large} ${sweep} ${p1.x} ${p1.y}`;
+}
+
+interface OptionProgress {
+  projects: number;
+  simulatedProjects: number;
+  experience: number;
+  simulatedExperience: number;
+  isComplete: boolean;
+}
+
+function optionProgress(
   option: FortyTwoTitleOption,
   cursus: FortyTwoCursus,
   planned: Record<number, unknown>,
-): boolean {
+): OptionProgress {
   let projects = 0;
+  let simulatedProjects = 0;
   let experience = 0;
+  let simulatedExperience = 0;
   for (const project of Object.values(option.projects)) {
     const userProject = cursus.projects[project.id];
     if (userProject?.is_validated) {
       projects++;
       experience += (project.experience || 0) * ((userProject.mark || 0) / 100);
     } else if (planned[project.id]) {
-      projects++;
-      experience += project.experience || 0;
+      simulatedProjects++;
+      simulatedExperience += project.experience || 0;
     }
   }
-  return (
-    projects >= option.numberOfProjects &&
-    (option.experience === 0 || experience >= option.experience)
-  );
+  const isComplete =
+    projects + simulatedProjects >= option.numberOfProjects &&
+    (option.experience === 0 ||
+      experience + simulatedExperience >= option.experience);
+  return {
+    projects,
+    simulatedProjects,
+    experience,
+    simulatedExperience,
+    isComplete,
+  };
+}
+
+function isOptionComplete(
+  option: FortyTwoTitleOption,
+  cursus: FortyTwoCursus,
+  planned: Record<number, unknown>,
+): boolean {
+  return optionProgress(option, cursus, planned).isComplete;
 }
 
 export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
@@ -150,6 +185,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
   const [zoom, setZoom] = useState(1);
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [selectedTitle, setSelectedTitle] = useState<number | null>(null);
+  const [titleMode, setTitleMode] = useState<"focus" | "info">("focus");
   const svgRef = useRef<SVGSVGElement>(null);
   const panRef = useRef(pan);
   const zoomRef = useRef(zoom);
@@ -375,6 +411,8 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
         requirements.push({
           key: reqKey,
           titleIndex,
+          optionIndex,
+          name: option.title,
           a0: s0,
           a1: s1,
           innerR: DONUT_OUTER + 6,
@@ -400,6 +438,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     ? nodes.filter((n) => n.projectId === selectedProject)
     : [];
   const selectedName = selectedNodes[0]?.name;
+  const infoMode = selectedTitle !== null && titleMode === "info";
 
   const isActive = (titleIndex: number, projectId: number) =>
     (selectedProject === null && selectedTitle === null) ||
@@ -472,6 +511,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
           {/* Serpentine spines: zig-zag along the circle through the XP tiers. */}
           {spines.map((s) => {
+            if (infoMode && s.titleIndex === selectedTitle) return null;
             const complete = completeByReq[s.reqKey];
             const color = SEGMENT_COLORS[s.titleIndex % SEGMENT_COLORS.length];
             const dim =
@@ -498,6 +538,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
           {/* Piscine children. */}
           {children.map((c) => {
+            if (infoMode && c.titleIndex === selectedTitle) return null;
             const dim =
               (selectedTitle !== null && c.titleIndex !== selectedTitle) ||
               selectedProject !== null;
@@ -548,7 +589,16 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={() => {
                   setSelectedProject(null);
-                  setSelectedTitle((prev) => (prev === i ? null : i));
+                  // cycle: unselected -> focus -> info -> unselected
+                  if (selectedTitle !== i) {
+                    setSelectedTitle(i);
+                    setTitleMode("focus");
+                  } else if (titleMode === "focus") {
+                    setTitleMode("info");
+                  } else {
+                    setSelectedTitle(null);
+                    setTitleMode("focus");
+                  }
                 }}
                 className="cursor-pointer"
               >
@@ -576,6 +626,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
           {/* Project nodes. */}
           {nodes.map((n) => {
+            if (infoMode && n.titleIndex === selectedTitle) return null;
             const sel = n.projectId === selectedProject;
             const active = isActive(n.titleIndex, n.projectId);
             const validated = cursus.projects[n.projectId]?.is_validated ?? false;
@@ -606,6 +657,121 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
               />
             );
           })}
+
+          {/* Info mode: replace the focused cert's projects with requirement
+              gauges (completed + simulated) and their names. */}
+          {infoMode &&
+            requirements
+              .filter((req) => req.titleIndex === selectedTitle)
+              .map((req) => {
+                const option = titles[req.titleIndex]?.options[req.optionIndex];
+                if (!option) return null;
+                const prog = optionProgress(option, cursus, planned);
+                const color =
+                  SEGMENT_COLORS[req.titleIndex % SEGMENT_COLORS.length];
+                const pad = (req.a1 - req.a0) * 0.06;
+                const a0 = req.a0 + pad;
+                const a1 = req.a1 - pad;
+                const span = a1 - a0;
+                const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+
+                const needP = option.numberOfProjects || 1;
+                const realP = clamp01(prog.projects / needP);
+                const simP = clamp01(
+                  (prog.projects + prog.simulatedProjects) / needP,
+                );
+                const needX = option.experience;
+                const realX = needX > 0 ? clamp01(prog.experience / needX) : 0;
+                const simX =
+                  needX > 0
+                    ? clamp01(
+                        (prog.experience + prog.simulatedExperience) / needX,
+                      )
+                    : 0;
+
+                const namePos = polar(306, (a0 + a1) / 2);
+
+                const gauge = (
+                  radius: number,
+                  real: number,
+                  sim: number,
+                  gkey: string,
+                ) => (
+                  <g key={gkey}>
+                    <path
+                      d={arcPath(radius, a0, a1)}
+                      fill="none"
+                      strokeLinecap="round"
+                      strokeWidth={13}
+                      className="stroke-secondary"
+                    />
+                    {sim > 0 && (
+                      <path
+                        d={arcPath(radius, a0, a0 + span * sim)}
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeWidth={13}
+                        className="stroke-sky-500"
+                      />
+                    )}
+                    {real > 0 && (
+                      <path
+                        d={arcPath(radius, a0, a0 + span * real)}
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeWidth={13}
+                        stroke={color}
+                      />
+                    )}
+                  </g>
+                );
+
+                return (
+                  <g key={`info-${req.key}`}>
+                    {gauge(258, realP, simP, `gp-${req.key}`)}
+                    {needX > 0 && gauge(222, realX, simX, `gx-${req.key}`)}
+                    {prog.isComplete && (
+                      <text
+                        x={namePos.x}
+                        y={namePos.y - 26}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fontSize={16}
+                        className="font-bold"
+                        style={{ fill: color }}
+                      >
+                        ✓ complete
+                      </text>
+                    )}
+                    <text
+                      x={namePos.x}
+                      y={namePos.y}
+                      textAnchor="middle"
+                      dominantBaseline="central"
+                      className="fill-foreground font-semibold"
+                      fontSize={22}
+                    >
+                      {option.title}
+                    </text>
+                    <text
+                      x={namePos.x}
+                      y={namePos.y + 24}
+                      textAnchor="middle"
+                      dominantBaseline="central"
+                      className="fill-muted-foreground"
+                      fontSize={15}
+                    >
+                      {prog.projects + prog.simulatedProjects}/
+                      {option.numberOfProjects} proj
+                      {needX > 0
+                        ? ` · ${Math.round(
+                            (prog.experience + prog.simulatedExperience) / 1000,
+                          )}k/${Math.round(needX / 1000)}k XP`
+                        : ""}
+                    </text>
+                  </g>
+                );
+              })}
         </g>
       </svg>
 
@@ -666,7 +832,8 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
           </span>
         ))}
         <span className="ml-auto text-muted-foreground">
-          scroll to zoom · drag to pan · click a project to simulate it
+          scroll to zoom · drag to pan · click a project to simulate · click a
+          cert number twice for its requirement summary
         </span>
       </div>
     </div>
