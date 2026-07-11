@@ -989,7 +989,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
       </div>
 
       {/* Spread slider: separates the nodes (bigger graph) without zooming. */}
-      <div className="absolute right-3 bottom-14 flex flex-col items-center gap-1 rounded-md border bg-background/90 px-1.5 py-2 shadow-sm">
+      <div className="absolute right-3 bottom-24 flex flex-col items-center gap-1 rounded-md border bg-background/90 px-1.5 py-2 shadow-sm">
         <input
           type="range"
           min={0.6}
