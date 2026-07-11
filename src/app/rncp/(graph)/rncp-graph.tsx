@@ -731,9 +731,11 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
               ? arcPath(rLabel, s.a1 - pad, s.a0 + pad)
               : arcPath(rLabel, s.a0 + pad, s.a1 - pad);
             const arcLen = rLabel * (s.a1 - s.a0 - 2 * pad);
+            // JetBrains Mono advance width ≈ 0.6em; leave a small margin so the
+            // curved label fits the arc without clipping either end.
             const fontSize = Math.max(
-              7,
-              Math.min(15, arcLen / (label.length * 0.52)),
+              6,
+              Math.min(13, (arcLen * 0.92) / (label.length * 0.62)),
             );
             return (
               <g
