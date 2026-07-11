@@ -5,6 +5,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { Session } from "next-auth";
+import { RefreshData } from "./refresh-data";
 import { SignOut } from "./sign-out";
 import { UserAvatar } from "./user-avatar";
 
@@ -23,6 +24,9 @@ export function UserMenu({ session }: UserMenuProps) {
         <UserAvatar imageUrl={session.user?.image as string} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
+        <DropdownMenuItem className="p-0">
+          <RefreshData />
+        </DropdownMenuItem>
         <DropdownMenuItem className="p-0">
           <SignOut />
         </DropdownMenuItem>
