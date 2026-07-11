@@ -47,6 +47,23 @@ function projectType(project: FortyTwoProject): ProjectType {
   return "project";
 }
 
+/** Short, arc-friendly certificate name. */
+function shortTitle(title: FortyTwoTitle): string {
+  const s = title.title.toLowerCase();
+  if (s.includes("web")) return "Web & Mobile";
+  if (s.includes("applicatif")) return "Applications";
+  if (s.includes("information") || s.includes("réseau") || s.includes("reseau"))
+    return "System & resources";
+  if (
+    s.includes("architecture") ||
+    s.includes("donné") ||
+    s.includes("donnee") ||
+    s.includes("data")
+  )
+    return "Bases de données";
+  return title.title;
+}
+
 /** XP tiers → radial depth. Higher XP sits further out. Shared across certs. */
 function xpTier(xp: number): number {
   if (xp <= 0) return 0;
@@ -691,7 +708,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
           {segments.map((s, i) => {
             const sel = selectedTitle === i;
             const num = s.title.type.endsWith("7") ? 7 : 6;
-            const label = `RNCP ${num} · ${s.title.title}`;
+            const label = `RNCP ${num} · ${shortTitle(s.title)}`;
             const rLabel = (DONUT_INNER + DONUT_OUTER) / 2;
             const pad = 0.04;
             // reverse the arc for bottom-half segments so text stays upright
