@@ -500,71 +500,20 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
         aria-label="RNCP certificates graph"
       >
         <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
-          {/* Requirement outlines: full glowing box when complete, otherwise a
-              partial arc growing symmetrically with completion % (0% = none). */}
+          {/* Requirement outlines. The % arc (completion estimate) is always
+              shown; the full section box only appears when the cert is focused
+              (gray if incomplete, glowing when complete). */}
           {requirements.map((req) => {
             const option = titles[req.titleIndex]?.options[req.optionIndex];
             if (!option) return null;
             const complete = completeByReq[req.key];
             const color = SEGMENT_COLORS[req.titleIndex % SEGMENT_COLORS.length];
-            const dim =
-              (selectedTitle !== null && req.titleIndex !== selectedTitle) ||
-              selectedProject !== null;
-
-            if (complete) {
-              return (
-                <g key={`req-${req.key}`}>
-                  <path
-                    id={`req-outline-${req.key}`}
-                    d={annularSector(req.innerR, req.outerR, req.a0, req.a1)}
-                    fill={color}
-                    fillOpacity={0.03}
-                    stroke={color}
-                    strokeWidth={2}
-                    opacity={dim ? 0.25 : 1}
-                    style={{ filter: `drop-shadow(0 0 3px ${color})` }}
-                  />
-                  {/* subtle light travelling the outline, then a small spark */}
-                  {!dim && (
-                    <circle r={3.5} fill={color}>
-                      <animateMotion
-                        dur="6s"
-                        repeatCount="indefinite"
-                        rotate="auto"
-                        keyPoints="0;1"
-                        keyTimes="0;1"
-                        calcMode="linear"
-                      >
-                        <mpath href={`#req-outline-${req.key}`} />
-                      </animateMotion>
-                      <animate
-                        attributeName="opacity"
-                        values="0;1;1;0.2;1;0"
-                        keyTimes="0;0.05;0.9;0.94;0.97;1"
-                        dur="6s"
-                        repeatCount="indefinite"
-                      />
-                      <animate
-                        attributeName="r"
-                        values="3.5;3.5;3.5;6;2;3.5"
-                        keyTimes="0;0.05;0.9;0.94;0.97;1"
-                        dur="6s"
-                        repeatCount="indefinite"
-                      />
-                    </circle>
-                  )}
-                </g>
-              );
-            }
-
-            // incomplete: partial outer arc by completion percentage
+            const prog = optionProgress(option, cursus, planned);
             const projFrac = Math.min(
               1,
-              (optionProgress(option, cursus, planned).projects +
-                optionProgress(option, cursus, planned).simulatedProjects) /
+              (prog.projects + prog.simulatedProjects) /
                 (option.numberOfProjects || 1),
             );
-            const prog = optionProgress(option, cursus, planned);
             const xpFrac =
               option.experience > 0
                 ? Math.min(
@@ -574,19 +523,68 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                   )
                 : 1;
             const frac = Math.min(projFrac, xpFrac);
-            if (frac <= 0.001) return null;
+            const inFocus =
+              selectedTitle === req.titleIndex && titleMode === "focus";
+            const dim =
+              (selectedTitle !== null && req.titleIndex !== selectedTitle) ||
+              selectedProject !== null;
             const mid = (req.a0 + req.a1) / 2;
-            const halfSpan = ((req.a1 - req.a0) * frac) / 2;
+            const halfSpan = ((req.a1 - req.a0) * Math.max(frac, 0)) / 2;
+
             return (
-              <path
-                key={`req-${req.key}`}
-                d={arcPath(req.outerR, mid - halfSpan, mid + halfSpan)}
-                fill="none"
-                stroke={color}
-                strokeWidth={2}
-                strokeLinecap="round"
-                opacity={dim ? 0.25 : 0.7}
-              />
+              <g key={`req-${req.key}`}>
+                {inFocus && (
+                  <path
+                    id={`req-outline-${req.key}`}
+                    d={annularSector(req.innerR, req.outerR, req.a0, req.a1)}
+                    fill={complete ? color : "none"}
+                    fillOpacity={complete ? 0.03 : 0}
+                    stroke={complete ? color : "currentColor"}
+                    className={complete ? "" : "text-muted-foreground/40"}
+                    strokeWidth={complete ? 2 : 1.25}
+                    style={
+                      complete
+                        ? { filter: `drop-shadow(0 0 3px ${color})` }
+                        : undefined
+                    }
+                  />
+                )}
+                {inFocus && complete && (
+                  <circle r={3.5} fill={color}>
+                    <animateMotion
+                      dur="6s"
+                      repeatCount="indefinite"
+                      rotate="auto"
+                    >
+                      <mpath href={`#req-outline-${req.key}`} />
+                    </animateMotion>
+                    <animate
+                      attributeName="opacity"
+                      values="0;1;1;0.2;1;0"
+                      keyTimes="0;0.05;0.9;0.94;0.97;1"
+                      dur="6s"
+                      repeatCount="indefinite"
+                    />
+                    <animate
+                      attributeName="r"
+                      values="3.5;3.5;3.5;6;2;3.5"
+                      keyTimes="0;0.05;0.9;0.94;0.97;1"
+                      dur="6s"
+                      repeatCount="indefinite"
+                    />
+                  </circle>
+                )}
+                {frac > 0.001 && (
+                  <path
+                    d={arcPath(req.outerR, mid - halfSpan, mid + halfSpan)}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth={complete ? 3 : 2}
+                    strokeLinecap="round"
+                    opacity={dim ? 0.25 : complete ? 0.85 : 0.6}
+                  />
+                )}
+              </g>
             );
           })}
 
