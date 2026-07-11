@@ -9,16 +9,16 @@ import type {
   FortyTwoTitleOption,
 } from "@/types/forty-two";
 import { useMemo, useRef, useState } from "react";
+import { PolarPath } from "./polar-path";
 
 const SIZE = 1000;
 const CENTER = SIZE / 2;
 const DONUT_INNER = 80;
-const DONUT_OUTER = 140;
-const ANCHOR_R = 290;
-const NODE_R = 9;
-const MIN_R = 168; // keep nodes outside the donut
-const MAX_R = 478;
-const ITERATIONS = 220;
+const DONUT_OUTER = 138;
+const LEVEL_BASE = 176;
+const LEVEL_GAP = 52;
+const SLOT = 0.06; // angular spacing between nodes on a level (rad)
+const NODE_R = 8;
 const PAN_LIMIT = 600;
 
 const SEGMENT_COLORS = [
@@ -30,17 +30,9 @@ const SEGMENT_COLORS = [
   "#f97316",
 ];
 
-interface Anchor {
-  key: string;
-  titleIndex: number;
-  optionIndex: number;
-  color: string;
-  angle: number;
-  x: number;
-  y: number;
-}
+const levelRadius = (level: number) => LEVEL_BASE + level * LEVEL_GAP;
 
-interface LayoutNode {
+interface GraphNode {
   key: string;
   anchorKey: string;
   titleIndex: number;
@@ -48,8 +40,7 @@ interface LayoutNode {
   name: string;
   x: number;
   y: number;
-  vx: number;
-  vy: number;
+  pathD: string;
   shared: boolean;
 }
 
@@ -117,12 +108,13 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     moved: boolean;
   } | null>(null);
 
-  // Layout only depends on the (static) titles + cursus, NOT on `planned`, so
-  // toggling a project recolours without re-running the relaxation.
-  const { nodes, anchors, segments } = useMemo(() => {
+  // Deterministic (idempotent) grid layout — depends only on the static
+  // titles/cursus, so toggling a project only recolours.
+  const { nodes, segments } = useMemo(() => {
     const count = titles.length || 1;
     const sweep = (Math.PI * 2) / count;
-    const titlePad = Math.min(0.08, sweep * 0.12);
+    const titlePad = Math.min(0.08, sweep * 0.1);
+    const sectionGap = 0.02;
 
     const titlesPerProject = new Map<number, Set<number>>();
     titles.forEach((title, ti) => {
@@ -142,109 +134,62 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
       mid: i * sweep + sweep / 2,
     }));
 
-    const anchors: Anchor[] = [];
-    const nodes: LayoutNode[] = [];
+    const nodes: GraphNode[] = [];
 
     titles.forEach((title, titleIndex) => {
-      const color = SEGMENT_COLORS[titleIndex % SEGMENT_COLORS.length];
       const t0 = titleIndex * sweep + titlePad;
       const t1 = (titleIndex + 1) * sweep - titlePad;
       const options = title.options;
+      const weights = options.map((o) =>
+        Math.max(1, Object.keys(o.projects).length),
+      );
+      const totalWeight = weights.reduce((a, b) => a + b, 0);
+      const available =
+        t1 - t0 - sectionGap * Math.max(0, options.length - 1);
 
+      let cursor = t0;
       options.forEach((option, optionIndex) => {
-        const angle =
-          options.length <= 1
-            ? (t0 + t1) / 2
-            : t0 + ((t1 - t0) * (optionIndex + 0.5)) / options.length;
-        const radius = ANCHOR_R + (optionIndex % 2) * 44;
-        const anchorPos = polar(radius, angle);
-        const anchorKey = `${titleIndex}:${optionIndex}`;
+        const share = weights[optionIndex] / totalWeight;
+        const s0 = cursor;
+        const s1 = cursor + available * share;
+        cursor = s1 + sectionGap;
 
-        anchors.push({
-          key: anchorKey,
-          titleIndex,
-          optionIndex,
-          color,
-          angle,
-          x: anchorPos.x,
-          y: anchorPos.y,
-        });
+        const anchorKey = `${titleIndex}:${optionIndex}`;
+        const pad = Math.min(0.015, (s1 - s0) * 0.12);
+        const trunkAngle = s0 + pad;
+        const usable = s1 - s0 - 2 * pad;
+        const perLevel = Math.max(1, Math.floor(usable / SLOT));
 
         Object.values(option.projects).forEach((project, k) => {
-          // seed nodes in a small sunflower around their anchor
-          const t = k * 2.3999632;
-          const rr = 7 * Math.sqrt(k + 1);
+          const level = Math.floor(k / perLevel);
+          const idx = k % perLevel;
+          const angle = trunkAngle + SLOT * (idx + 0.5);
+          const radius = levelRadius(level);
+          const { x, y } = polar(radius, angle);
+          // radial out to this level, then follow the circle to the node.
+          const pathD = new PolarPath(CENTER, CENTER)
+            .moveTo(DONUT_OUTER, trunkAngle)
+            .radialTo(radius)
+            .arcTo(angle)
+            .toString();
+
           nodes.push({
             key: `${anchorKey}:${project.id}:${k}`,
             anchorKey,
             titleIndex,
             projectId: project.id,
             name: project.name,
-            x: anchorPos.x + rr * Math.cos(t),
-            y: anchorPos.y + rr * Math.sin(t),
-            vx: 0,
-            vy: 0,
+            x,
+            y,
+            pathD,
             shared: (titlesPerProject.get(project.id)?.size ?? 0) > 1,
           });
         });
       });
     });
 
-    const anchorByKey = new Map(anchors.map((a) => [a.key, a]));
-    const minDist = 2 * NODE_R + 4;
-
-    for (let iter = 0; iter < ITERATIONS; iter++) {
-      // attract each node to its option anchor (grouping)
-      for (const n of nodes) {
-        const a = anchorByKey.get(n.anchorKey);
-        if (!a) continue;
-        n.vx += (a.x - n.x) * 0.03;
-        n.vy += (a.y - n.y) * 0.03;
-      }
-
-      // collision (no overlaps)
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const a = nodes[i];
-          const b = nodes[j];
-          let dx = b.x - a.x;
-          let dy = b.y - a.y;
-          let d = Math.hypot(dx, dy) || 0.01;
-          if (d < minDist) {
-            const push = (minDist - d) / 2;
-            dx /= d;
-            dy /= d;
-            a.x -= dx * push;
-            a.y -= dy * push;
-            b.x += dx * push;
-            b.y += dy * push;
-          }
-        }
-      }
-
-      // integrate + damping + radial bounds
-      for (const n of nodes) {
-        n.x += n.vx;
-        n.y += n.vy;
-        n.vx *= 0.8;
-        n.vy *= 0.8;
-        const dx = n.x - CENTER;
-        const dy = n.y - CENTER;
-        const r = Math.hypot(dx, dy) || 0.01;
-        if (r < MIN_R) {
-          n.x = CENTER + (dx / r) * MIN_R;
-          n.y = CENTER + (dy / r) * MIN_R;
-          n.vx = 0;
-          n.vy = 0;
-        } else if (r > MAX_R) {
-          n.x = CENTER + (dx / r) * MAX_R;
-          n.y = CENTER + (dy / r) * MAX_R;
-        }
-      }
-    }
-
-    return { nodes, anchors, segments };
-  }, [titles, cursus]);
+    return { nodes, segments };
+  }, [titles]);
 
   const completeByAnchor = useMemo(() => {
     const map: Record<string, boolean> = {};
@@ -256,21 +201,12 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     return map;
   }, [titles, cursus, planned]);
 
-  const nodesByAnchor = useMemo(() => {
-    const map = new Map<string, LayoutNode[]>();
-    for (const n of nodes) {
-      if (!map.has(n.anchorKey)) map.set(n.anchorKey, []);
-      map.get(n.anchorKey)?.push(n);
-    }
-    return map;
-  }, [nodes]);
-
   const selectedNodes = selectedProject
     ? nodes.filter((n) => n.projectId === selectedProject)
     : [];
   const selectedName = selectedNodes[0]?.name;
 
-  const isActive = (n: LayoutNode) =>
+  const isActive = (n: GraphNode) =>
     (selectedProject === null && selectedTitle === null) ||
     n.projectId === selectedProject ||
     n.titleIndex === selectedTitle;
@@ -311,55 +247,26 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
         aria-label="RNCP certificates graph"
       >
         <g transform={`translate(${pan.x} ${pan.y})`}>
-          {/* Option "sections": stem donut→hub + hub→node links. */}
-          {anchors.map((a) => {
-            const stem = polar(DONUT_OUTER, a.angle);
-            const complete = completeByAnchor[a.key];
-            const dim = selectedTitle !== null && a.titleIndex !== selectedTitle;
-            const links = nodesByAnchor.get(a.key) ?? [];
+          {/* Branch paths: radial out to a level, then along the circle. */}
+          {nodes.map((n) => {
+            const complete = completeByAnchor[n.anchorKey];
+            const active = isActive(n);
+            const sel = n.projectId === selectedProject;
+            const color = SEGMENT_COLORS[n.titleIndex % SEGMENT_COLORS.length];
             return (
-              <g
-                key={`anchor-${a.key}`}
-                opacity={dim ? 0.15 : 1}
-              >
-                {links.map((n) => (
-                  <line
-                    key={`hublink-${n.key}`}
-                    x1={a.x}
-                    y1={a.y}
-                    x2={n.x}
-                    y2={n.y}
-                    stroke={complete ? a.color : "currentColor"}
-                    className={complete ? "" : "text-muted-foreground/15"}
-                    strokeOpacity={complete ? 0.35 : 1}
-                    strokeWidth={1.1}
-                  />
-                ))}
-                <line
-                  x1={stem.x}
-                  y1={stem.y}
-                  x2={a.x}
-                  y2={a.y}
-                  stroke={a.color}
-                  strokeWidth={complete ? 5 : 2.5}
-                  strokeOpacity={complete ? 0.9 : 0.4}
-                  style={
-                    complete ? { filter: `drop-shadow(0 0 5px ${a.color})` } : undefined
-                  }
-                />
-                <circle
-                  cx={a.x}
-                  cy={a.y}
-                  r={complete ? 9 : 6}
-                  fill={a.color}
-                  fillOpacity={complete ? 1 : 0.5}
-                  className="stroke-background"
-                  strokeWidth={2}
-                  style={
-                    complete ? { filter: `drop-shadow(0 0 6px ${a.color})` } : undefined
-                  }
-                />
-              </g>
+              <path
+                key={`path-${n.key}`}
+                d={n.pathD}
+                fill="none"
+                stroke={sel ? "#38bdf8" : complete ? color : "currentColor"}
+                className={cn(
+                  !sel && !complete && "text-muted-foreground/20",
+                )}
+                strokeWidth={sel ? 2.5 : 1.25}
+                strokeOpacity={complete && !sel ? 0.5 : 1}
+                strokeLinecap="round"
+                opacity={active ? 1 : 0.12}
+              />
             );
           })}
 
@@ -371,8 +278,9 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
               y1={CENTER}
               x2={n.x}
               y2={n.y}
-              className="stroke-sky-400/70"
-              strokeWidth={3}
+              className="stroke-sky-400/60"
+              strokeWidth={2.5}
+              strokeDasharray="4 6"
             />
           ))}
 
@@ -412,38 +320,36 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
             );
           })}
 
-          {/* Project nodes — click toggles simulation + isolates across certs. */}
+          {/* Project nodes. */}
           {nodes.map((n) => {
             const sel = n.projectId === selectedProject;
             const active = isActive(n);
             const validated = cursus.projects[n.projectId]?.is_validated ?? false;
             const isPlanned = Boolean(planned[n.projectId]);
             return (
-              <g
+              <circle
                 key={`node-${n.key}`}
-                transform={`translate(${n.x} ${n.y})`}
+                cx={n.x}
+                cy={n.y}
+                r={sel ? NODE_R + 4 : NODE_R}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={() => {
                   setSelectedTitle(null);
                   setSelectedProject(n.projectId);
                   if (!validated) toggle(n.projectId);
                 }}
-                className="cursor-pointer"
+                className={cn(
+                  "cursor-pointer",
+                  validated
+                    ? "fill-primary"
+                    : isPlanned
+                      ? "fill-sky-500"
+                      : "fill-muted-foreground/40",
+                )}
+                stroke={sel ? "#38bdf8" : n.shared ? "#e5e7eb" : "none"}
+                strokeWidth={sel ? 4 : n.shared ? 2.5 : 0}
                 opacity={active ? 1 : 0.18}
-              >
-                <circle
-                  r={sel ? NODE_R + 4 : NODE_R}
-                  className={cn(
-                    validated
-                      ? "fill-primary"
-                      : isPlanned
-                        ? "fill-sky-500"
-                        : "fill-muted-foreground/40",
-                  )}
-                  stroke={sel ? "#38bdf8" : n.shared ? "#e5e7eb" : "none"}
-                  strokeWidth={sel ? 4 : n.shared ? 2.5 : 0}
-                />
-              </g>
+              />
             );
           })}
         </g>
