@@ -11,6 +11,7 @@ import type {
 } from "@/types/forty-two";
 import { Minus, Plus, Scan } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { PolarPath } from "./polar-path";
 
 const SIZE = 1000;
 const CENTER = SIZE / 2;
@@ -83,6 +84,13 @@ interface Requirement {
   a1: number;
   innerR: number;
   outerR: number;
+}
+
+interface Spine {
+  key: string;
+  reqKey: string;
+  titleIndex: number;
+  d: string;
 }
 
 interface Segment {
@@ -200,7 +208,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
   // Deterministic layout: requirement boxes; inside, projects grouped by type
   // (angular lanes) and placed by XP tier (radial depth).
-  const { nodes, children, requirements, segments } = useMemo(() => {
+  const { nodes, children, requirements, spines, segments } = useMemo(() => {
     const count = titles.length || 1;
     const sweep = (Math.PI * 2) / count;
     const titlePad = Math.min(0.08, sweep * 0.1);
@@ -227,6 +235,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     const nodes: GraphNode[] = [];
     const children: ChildNode[] = [];
     const requirements: Requirement[] = [];
+    const spines: Spine[] = [];
 
     titles.forEach((title, titleIndex) => {
       const t0 = titleIndex * sweep + titlePad;
@@ -282,6 +291,8 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
             byTier.get(tier)?.push(p);
           }
 
+          const laneTierAngles = new Map<number, number[]>();
+
           for (const [tier, tierProjects] of byTier) {
             const radius = tierRadius(tier);
             outerR = Math.max(outerR, radius);
@@ -295,6 +306,9 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                     ((la1 - la0 - 2 * innerPad) * i) /
                       (tierProjects.length - 1);
               const { x, y } = polar(radius, angle);
+
+              if (!laneTierAngles.has(tier)) laneTierAngles.set(tier, []);
+              laneTierAngles.get(tier)?.push(angle);
 
               nodes.push({
                 key: `${reqKey}:${project.id}:${i}:${tier}`,
@@ -328,6 +342,34 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
               }
             });
           }
+
+          // Serpentine spine: snake through the lane's tiers (inner→outer),
+          // alternating direction so the lines zig-zag along the circle.
+          const usedTiers = [...laneTierAngles.keys()].sort((a, b) => a - b);
+          if (usedTiers.length > 0) {
+            const spine = new PolarPath(CENTER, CENTER);
+            let dir = 1;
+            usedTiers.forEach((tier, ti) => {
+              const angles = (laneTierAngles.get(tier) ?? [])
+                .slice()
+                .sort((a, b) => a - b);
+              const ordered = dir > 0 ? angles : angles.slice().reverse();
+              const radius = tierRadius(tier);
+              if (ti === 0) {
+                spine.moveTo(DONUT_OUTER, la0).radialTo(radius);
+              } else {
+                spine.radialTo(radius);
+              }
+              for (const a of ordered) spine.arcTo(a);
+              dir = -dir;
+            });
+            spines.push({
+              key: `${reqKey}:${type}`,
+              reqKey,
+              titleIndex,
+              d: spine.toString(),
+            });
+          }
         });
 
         requirements.push({
@@ -341,7 +383,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
       });
     });
 
-    return { nodes, children, requirements, segments };
+    return { nodes, children, requirements, spines, segments };
   }, [titles]);
 
   const completeByReq = useMemo(() => {
@@ -428,24 +470,28 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
             );
           })}
 
-          {/* Radial connectors (branch stems) from the box base to each node. */}
-          {nodes.map((n) => {
-            const base = polar(DONUT_OUTER + 6, n.angle);
-            const active = isActive(n.titleIndex, n.projectId);
-            const sel = n.projectId === selectedProject;
+          {/* Serpentine spines: zig-zag along the circle through the XP tiers. */}
+          {spines.map((s) => {
+            const complete = completeByReq[s.reqKey];
+            const color = SEGMENT_COLORS[s.titleIndex % SEGMENT_COLORS.length];
+            const dim =
+              (selectedTitle !== null && s.titleIndex !== selectedTitle) ||
+              selectedProject !== null;
             return (
-              <line
-                key={`stem-${n.key}`}
-                x1={base.x}
-                y1={base.y}
-                x2={n.x}
-                y2={n.y}
-                className={cn(
-                  "stroke-muted-foreground/20",
-                  sel && "stroke-sky-400/70",
-                )}
-                strokeWidth={sel ? 2 : 1}
-                opacity={active ? 1 : 0.12}
+              <path
+                key={`spine-${s.key}`}
+                d={s.d}
+                fill="none"
+                stroke={complete ? color : "currentColor"}
+                className={complete ? "" : "text-muted-foreground/25"}
+                strokeWidth={complete ? 2.5 : 1.5}
+                strokeOpacity={complete ? 0.6 : 1}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                opacity={dim ? 0.12 : 1}
+                style={
+                  complete ? { filter: `drop-shadow(0 0 4px ${color})` } : undefined
+                }
               />
             );
           })}
