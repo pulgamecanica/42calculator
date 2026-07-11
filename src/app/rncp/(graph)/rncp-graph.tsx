@@ -16,9 +16,10 @@ const CENTER = SIZE / 2;
 const DONUT_INNER = 80;
 const DONUT_OUTER = 138;
 const LEVEL_BASE = 176;
-const LEVEL_GAP = 52;
-const SLOT = 0.06; // angular spacing between nodes on a level (rad)
+const LEVEL_GAP = 48;
+const SLOT = 0.07; // angular spacing between nodes on a level (rad)
 const NODE_R = 8;
+const CHILD_R = 4;
 const PAN_LIMIT = 600;
 
 const SEGMENT_COLORS = [
@@ -40,8 +41,24 @@ interface GraphNode {
   name: string;
   x: number;
   y: number;
-  pathD: string;
   shared: boolean;
+}
+
+interface ChildNode {
+  key: string;
+  titleIndex: number;
+  name: string;
+  x: number;
+  y: number;
+  px: number;
+  py: number;
+}
+
+interface Spine {
+  key: string;
+  anchorKey: string;
+  titleIndex: number;
+  d: string;
 }
 
 interface Segment {
@@ -110,7 +127,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
   // Deterministic (idempotent) grid layout — depends only on the static
   // titles/cursus, so toggling a project only recolours.
-  const { nodes, segments } = useMemo(() => {
+  const { nodes, children, spines, segments } = useMemo(() => {
     const count = titles.length || 1;
     const sweep = (Math.PI * 2) / count;
     const titlePad = Math.min(0.08, sweep * 0.1);
@@ -135,6 +152,8 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     }));
 
     const nodes: GraphNode[] = [];
+    const children: ChildNode[] = [];
+    const spines: Spine[] = [];
 
     titles.forEach((title, titleIndex) => {
       const t0 = titleIndex * sweep + titlePad;
@@ -144,8 +163,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
         Math.max(1, Object.keys(o.projects).length),
       );
       const totalWeight = weights.reduce((a, b) => a + b, 0);
-      const available =
-        t1 - t0 - sectionGap * Math.max(0, options.length - 1);
+      const available = t1 - t0 - sectionGap * Math.max(0, options.length - 1);
 
       let cursor = t0;
       options.forEach((option, optionIndex) => {
@@ -156,22 +174,22 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
         const anchorKey = `${titleIndex}:${optionIndex}`;
         const pad = Math.min(0.015, (s1 - s0) * 0.12);
-        const trunkAngle = s0 + pad;
+        const trunkStart = s0 + pad;
         const usable = s1 - s0 - 2 * pad;
         const perLevel = Math.max(1, Math.floor(usable / SLOT));
+        const slotAngle = (slot: number) => trunkStart + SLOT * (slot + 0.5);
 
-        Object.values(option.projects).forEach((project, k) => {
+        const projects = Object.values(option.projects);
+        const total = projects.length;
+        const levels = Math.ceil(total / perLevel) || 1;
+
+        // Nodes on a left-aligned polar grid (shared levels + columns).
+        projects.forEach((project, k) => {
           const level = Math.floor(k / perLevel);
-          const idx = k % perLevel;
-          const angle = trunkAngle + SLOT * (idx + 0.5);
+          const slot = k % perLevel;
           const radius = levelRadius(level);
+          const angle = slotAngle(slot);
           const { x, y } = polar(radius, angle);
-          // radial out to this level, then follow the circle to the node.
-          const pathD = new PolarPath(CENTER, CENTER)
-            .moveTo(DONUT_OUTER, trunkAngle)
-            .radialTo(radius)
-            .arcTo(angle)
-            .toString();
 
           nodes.push({
             key: `${anchorKey}:${project.id}:${k}`,
@@ -181,14 +199,54 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
             name: project.name,
             x,
             y,
-            pathD,
             shared: (titlesPerProject.get(project.id)?.size ?? 0) > 1,
           });
+
+          // A piscine / parent project: render its children as a small
+          // connected sub-cluster just outside the node.
+          const kids = project.children ?? [];
+          if (kids.length > 0) {
+            const spread = SLOT * 0.9;
+            kids.forEach((child, ci) => {
+              const ca =
+                angle - spread / 2 + (spread * (ci + 0.5)) / kids.length;
+              const cp = polar(radius + LEVEL_GAP * 0.5, ca);
+              children.push({
+                key: `${anchorKey}:${project.id}:${k}:c${child.id}:${ci}`,
+                titleIndex,
+                name: child.name,
+                x: cp.x,
+                y: cp.y,
+                px: x,
+                py: y,
+              });
+            });
+          }
+        });
+
+        // Serpentine spine: snake out level by level, alternating direction.
+        const spine = new PolarPath(CENTER, CENTER)
+          .moveTo(DONUT_OUTER, slotAngle(0))
+          .radialTo(levelRadius(0));
+        for (let level = 0; level < levels; level++) {
+          const countL = Math.min(perLevel, total - level * perLevel);
+          const order: number[] = [];
+          for (let j = 0; j < countL; j++) order.push(j);
+          if (level % 2 === 1) order.reverse();
+          if (level > 0) spine.radialTo(levelRadius(level));
+          for (const slot of order) spine.arcTo(slotAngle(slot));
+        }
+
+        spines.push({
+          key: anchorKey,
+          anchorKey,
+          titleIndex,
+          d: spine.toString(),
         });
       });
     });
 
-    return { nodes, segments };
+    return { nodes, children, spines, segments };
   }, [titles]);
 
   const completeByAnchor = useMemo(() => {
@@ -247,26 +305,57 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
         aria-label="RNCP certificates graph"
       >
         <g transform={`translate(${pan.x} ${pan.y})`}>
-          {/* Branch paths: radial out to a level, then along the circle. */}
-          {nodes.map((n) => {
-            const complete = completeByAnchor[n.anchorKey];
-            const active = isActive(n);
-            const sel = n.projectId === selectedProject;
-            const color = SEGMENT_COLORS[n.titleIndex % SEGMENT_COLORS.length];
+          {/* Serpentine spine per option (snakes out level by level). */}
+          {spines.map((s) => {
+            const complete = completeByAnchor[s.anchorKey];
+            const dim =
+              (selectedTitle !== null && s.titleIndex !== selectedTitle) ||
+              selectedProject !== null;
+            const color = SEGMENT_COLORS[s.titleIndex % SEGMENT_COLORS.length];
             return (
               <path
-                key={`path-${n.key}`}
-                d={n.pathD}
+                key={`spine-${s.key}`}
+                d={s.d}
                 fill="none"
-                stroke={sel ? "#38bdf8" : complete ? color : "currentColor"}
-                className={cn(
-                  !sel && !complete && "text-muted-foreground/20",
-                )}
-                strokeWidth={sel ? 2.5 : 1.25}
-                strokeOpacity={complete && !sel ? 0.5 : 1}
+                stroke={complete ? color : "currentColor"}
+                className={complete ? "" : "text-muted-foreground/25"}
+                strokeWidth={complete ? 3 : 1.5}
+                strokeOpacity={complete ? 0.55 : 1}
                 strokeLinecap="round"
-                opacity={active ? 1 : 0.12}
+                strokeLinejoin="round"
+                opacity={dim ? 0.12 : 1}
+                style={
+                  complete ? { filter: `drop-shadow(0 0 4px ${color})` } : undefined
+                }
               />
+            );
+          })}
+
+          {/* Piscine children (sub-projects). */}
+          {children.map((c) => {
+            const dim =
+              (selectedTitle !== null && c.titleIndex !== selectedTitle) ||
+              selectedProject !== null;
+            return (
+              <g
+                key={`child-${c.key}`}
+                opacity={dim ? 0.1 : 0.85}
+              >
+                <line
+                  x1={c.px}
+                  y1={c.py}
+                  x2={c.x}
+                  y2={c.y}
+                  className="stroke-muted-foreground/30"
+                  strokeWidth={1}
+                />
+                <circle
+                  cx={c.x}
+                  cy={c.y}
+                  r={CHILD_R}
+                  className="fill-muted-foreground/50"
+                />
+              </g>
             );
           })}
 
