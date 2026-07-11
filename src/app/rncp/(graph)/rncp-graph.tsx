@@ -33,7 +33,7 @@ const ZOOM_MAX = 5;
 
 const SEGMENT_COLORS = [
   "#f5c542",
-  "#38bdf8",
+  "#ff5aa1",
   "#a78bfa",
   "#fb7185",
   "#34d399",
