@@ -157,9 +157,22 @@ function calculateExperience(
   return { experience, projects, simulatedExperience, simulatedProjects };
 }
 
-export function TitleOptionRequirements({
-  option,
-}: { option: FortyTwoTitleOption }) {
+export interface TitleOptionProgress {
+  projects: number;
+  experience: number;
+  simulatedProjects: number;
+  simulatedExperience: number;
+  projectsMet: boolean;
+  experienceMet: boolean;
+  /** Both requirements met (counting simulated projects). */
+  isComplete: boolean;
+  /** Complete only because of simulated projects (not real completions). */
+  completedViaSimulation: boolean;
+}
+
+export function useTitleOptionProgress(
+  option: FortyTwoTitleOption,
+): TitleOptionProgress {
   const { cursus } = useFortyTwoStore((state) => state);
   const simulated = useRncpSimulationStore((state) => state.simulated);
   const isSimulated = (projectId: number) => Boolean(simulated[projectId]);
@@ -177,6 +190,36 @@ export function TitleOptionRequirements({
     simulatedProjects += c.simulatedProjects;
     simulatedExperience += c.simulatedExperience;
   }
+
+  const projectsMet = projects + simulatedProjects >= option.numberOfProjects;
+  const experienceMet =
+    option.experience === 0 ||
+    experience + simulatedExperience >= option.experience;
+  const realProjectsMet = projects >= option.numberOfProjects;
+  const realExperienceMet =
+    option.experience === 0 || experience >= option.experience;
+
+  const isComplete = projectsMet && experienceMet;
+  const completedViaSimulation =
+    isComplete && !(realProjectsMet && realExperienceMet);
+
+  return {
+    projects,
+    experience,
+    simulatedProjects,
+    simulatedExperience,
+    projectsMet,
+    experienceMet,
+    isComplete,
+    completedViaSimulation,
+  };
+}
+
+export function TitleOptionRequirements({
+  option,
+}: { option: FortyTwoTitleOption }) {
+  const { projects, experience, simulatedProjects, simulatedExperience } =
+    useTitleOptionProgress(option);
 
   return (
     <div className="space-y-4">
