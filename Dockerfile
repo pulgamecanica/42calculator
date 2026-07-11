@@ -24,4 +24,6 @@ COPY --chown=nextjs:nodejs . .
 
 USER nextjs
 
-CMD [ "npm", "run", "dev" ]
+EXPOSE 3000:3000
+
+CMD [ "npm", "run", "dev", "--", "--host"]

@@ -20,21 +20,25 @@ const providers: Provider[] = [
     clientId: process.env.AUTH_42_SCHOOL_ID,
     clientSecret: process.env.AUTH_42_SCHOOL_SECRET,
 
-    profile(profile: FortyTwoProfile, tokens): User {
-      after(async () => {
+    async profile(profile: FortyTwoProfile, tokens): Promise<User> {
+      // Fetch and store the cursus *before* returning, so it is available on
+      // the very first render after sign-in. Deferring this with after() let
+      // the redirect to /calculator read the cache before the write landed,
+      // which showed a level of 0 until the page was refreshed.
+      try {
         const cursus = await parseCursus(
           profile,
           tokens.access_token as string,
         );
 
-        try {
-          await kv.set(`cursus:${profile.login}`, cursus, {
-            ex: SESSION_MAX_AGE,
-          });
-        } catch (error) {
-          return Promise.reject(error);
-        }
-      });
+        await kv.set(`cursus:${profile.login}`, cursus, {
+          ex: SESSION_MAX_AGE,
+        });
+      } catch (error) {
+        // Don't block sign-in if the cursus can't be fetched or stored; the UI
+        // falls back to defaults until the data becomes available.
+        console.error(`Error storing cursus on sign-in: ${error}`);
+      }
 
       return {
         login: profile.login,

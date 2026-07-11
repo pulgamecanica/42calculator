@@ -20,7 +20,9 @@ services:
       AUTH_SECRET: "${AUTH_SECRET}"
       AUTH_42_SCHOOL_ID: "${AUTH_42_SCHOOL_ID}"
       AUTH_42_SCHOOL_SECRET: "${AUTH_42_SCHOOL_SECRET}"
-      KV_REST_API_URL: "${KV_REST_API_URL}"
+      # Inside the compose network the app reaches the HTTP proxy by its
+      # service name, not the host-facing localhost URL from .env.
+      KV_REST_API_URL: "http://redis-http"
       KV_REST_API_TOKEN: "${KV_REST_API_TOKEN}"
 
   redis:
@@ -28,6 +30,10 @@ services:
 
   redis-http:
     image: hiett/serverless-redis-http:latest
+    # Publish the proxy so a locally-run `next dev` (outside compose) can
+    # reach it at http://localhost:8079. Container listens on port 80.
+    ports:
+      - "8079:80"
     environment:
       SRH_MODE: "env"
       SRH_TOKEN: "${KV_REST_API_TOKEN}"
