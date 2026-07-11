@@ -148,7 +148,6 @@ function optionProgress(
   option: FortyTwoTitleOption,
   cursus: FortyTwoCursus,
   planned: Record<number, unknown>,
-  xpOf: (project: FortyTwoProject) => number = (p) => p.experience || 0,
 ): OptionProgress {
   let projects = 0;
   let simulatedProjects = 0;
@@ -158,10 +157,10 @@ function optionProgress(
     const userProject = cursus.projects[project.id];
     if (userProject?.is_validated) {
       projects++;
-      experience += xpOf(project) * ((userProject.mark || 0) / 100);
+      experience += (project.experience || 0) * ((userProject.mark || 0) / 100);
     } else if (planned[project.id]) {
       simulatedProjects++;
-      simulatedExperience += xpOf(project);
+      simulatedExperience += project.experience || 0;
     }
   }
   const isComplete =
@@ -181,9 +180,8 @@ function isOptionComplete(
   option: FortyTwoTitleOption,
   cursus: FortyTwoCursus,
   planned: Record<number, unknown>,
-  xpOf?: (project: FortyTwoProject) => number,
 ): boolean {
-  return optionProgress(option, cursus, planned, xpOf).isComplete;
+  return optionProgress(option, cursus, planned).isComplete;
 }
 
 export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
@@ -214,12 +212,6 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
   // Spread scales content radii outward from the donut edge (separates nodes)
   // without resizing the donut itself.
   const rScale = (r: number) => DONUT_OUTER + (r - DONUT_OUTER) * spread;
-
-  // Effective XP used across the graph (applies the piscine fix when enabled).
-  const xpOf = (project: FortyTwoProject) =>
-    fixPiscines && projectType(project) === "piscine"
-      ? PISCINE_XP
-      : project.experience || 0;
 
   const clampPan = (p: { x: number; y: number }, z: number) => {
     const limit = PAN_LIMIT + (SIZE * (z - 1)) / 2;
@@ -463,17 +455,15 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
   const completeByReq = useMemo(() => {
     const map: Record<string, boolean> = {};
-    const localXpOf = (project: FortyTwoProject) =>
-      fixPiscines && projectType(project) === "piscine"
-        ? PISCINE_XP
-        : project.experience || 0;
     titles.forEach((title, ti) => {
       title.options.forEach((option, oi) => {
-        map[`${ti}:${oi}`] = isOptionComplete(option, cursus, planned, localXpOf);
+        // Completion uses REAL XP — the piscine fix only affects graph
+        // placement, not accurate progress.
+        map[`${ti}:${oi}`] = isOptionComplete(option, cursus, planned);
       });
     });
     return map;
-  }, [titles, cursus, planned, fixPiscines]);
+  }, [titles, cursus, planned]);
 
   const selectedNodes = selectedProject
     ? nodes.filter((n) => n.projectId === selectedProject)
@@ -534,7 +524,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
             if (!option) return null;
             const complete = completeByReq[req.key];
             const color = SEGMENT_COLORS[req.titleIndex % SEGMENT_COLORS.length];
-            const prog = optionProgress(option, cursus, planned, xpOf);
+            const prog = optionProgress(option, cursus, planned);
             const projFrac = Math.min(
               1,
               (prog.projects + prog.simulatedProjects) /
@@ -783,7 +773,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
               .map((req) => {
                 const option = titles[req.titleIndex]?.options[req.optionIndex];
                 if (!option) return null;
-                const prog = optionProgress(option, cursus, planned, xpOf);
+                const prog = optionProgress(option, cursus, planned);
                 const color =
                   SEGMENT_COLORS[req.titleIndex % SEGMENT_COLORS.length];
                 const pad = (req.a1 - req.a0) * 0.06;
@@ -856,7 +846,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
               .map((req) => {
                 const option = titles[req.titleIndex]?.options[req.optionIndex];
                 if (!option) return null;
-                const prog = optionProgress(option, cursus, planned, xpOf);
+                const prog = optionProgress(option, cursus, planned);
                 const color =
                   SEGMENT_COLORS[req.titleIndex % SEGMENT_COLORS.length];
                 const needX = option.experience;
