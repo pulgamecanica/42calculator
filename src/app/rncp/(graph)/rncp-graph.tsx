@@ -1033,24 +1033,46 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
         </div>
       )}
 
-      <div className="flex flex-wrap gap-x-4 gap-y-1 border-t bg-background/60 px-4 py-2 text-xs">
-        {segments.map((s, i) => (
-          <span
-            key={`legend-${i}`}
-            className="flex items-center gap-1.5"
-          >
-            <span
-              className="inline-block size-3 rounded-full"
-              style={{ backgroundColor: s.color }}
-            />
-            <span className="font-medium">{i + 1}.</span>
-            <span className="text-muted-foreground">{s.title.title}</span>
-          </span>
-        ))}
-        <span className="ml-auto text-muted-foreground">
-          scroll to zoom · drag to pan · click a project to simulate · click a
-          cert number twice for its requirement summary
-        </span>
+      <div className="flex flex-wrap items-start justify-between gap-x-8 gap-y-2 border-t bg-background/60 px-4 py-2 text-xs">
+        {/* Legend: one row per RNCP level. */}
+        <div className="space-y-1">
+          {[6, 7].map((level) => (
+            <div
+              key={`legend-row-${level}`}
+              className="flex flex-wrap items-center gap-x-4 gap-y-1"
+            >
+              <span className="w-14 shrink-0 font-semibold text-muted-foreground">
+                RNCP {level}
+              </span>
+              {segments
+                .map((s, i) => ({ s, i }))
+                .filter(
+                  ({ s }) => (s.title.type.endsWith("7") ? 7 : 6) === level,
+                )
+                .map(({ s, i }) => (
+                  <span
+                    key={`legend-${i}`}
+                    className="flex items-center gap-1.5"
+                  >
+                    <span
+                      className="inline-block size-3 rounded-full"
+                      style={{ backgroundColor: s.color }}
+                    />
+                    <span className="text-muted-foreground">
+                      {shortTitle(s.title)}
+                    </span>
+                  </span>
+                ))}
+            </div>
+          ))}
+        </div>
+
+        {/* Instructions: one per row. */}
+        <div className="space-y-0.5 text-muted-foreground sm:text-right">
+          <div>Scroll to zoom · drag to pan</div>
+          <div>Click a project to simulate it</div>
+          <div>Click a cert twice for its requirement summary</div>
+        </div>
       </div>
     </div>
   );
