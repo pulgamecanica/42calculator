@@ -26,4 +26,4 @@ USER nextjs
 
 EXPOSE 3000:3000
 
-CMD [ "npm", "run", "dev", "--", "--host"]
+CMD [ "npm", "run", "dev" ]
