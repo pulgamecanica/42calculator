@@ -65,6 +65,7 @@ interface GraphNode {
   x: number;
   y: number;
   angle: number;
+  pathD: string;
   shared: boolean;
 }
 
@@ -86,13 +87,6 @@ interface Requirement {
   a1: number;
   innerR: number;
   outerR: number;
-}
-
-interface Spine {
-  key: string;
-  reqKey: string;
-  titleIndex: number;
-  d: string;
 }
 
 interface Segment {
@@ -244,7 +238,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
   // Deterministic layout: requirement boxes; inside, projects grouped by type
   // (angular lanes) and placed by XP tier (radial depth).
-  const { nodes, children, requirements, spines, segments } = useMemo(() => {
+  const { nodes, children, requirements, segments } = useMemo(() => {
     const count = titles.length || 1;
     const sweep = (Math.PI * 2) / count;
     const titlePad = Math.min(0.08, sweep * 0.1);
@@ -271,7 +265,6 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     const nodes: GraphNode[] = [];
     const children: ChildNode[] = [];
     const requirements: Requirement[] = [];
-    const spines: Spine[] = [];
 
     titles.forEach((title, titleIndex) => {
       const t0 = titleIndex * sweep + titlePad;
@@ -327,24 +320,31 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
             byTier.get(tier)?.push(p);
           }
 
-          const laneTierAngles = new Map<number, number[]>();
-
           for (const [tier, tierProjects] of byTier) {
             const radius = tierRadius(tier);
             outerR = Math.max(outerR, radius);
             const innerPad = Math.min(0.008, (la1 - la0) * 0.12);
+            const lone = tierProjects.length <= 1;
             tierProjects.forEach((project, i) => {
-              const angle =
-                tierProjects.length <= 1
-                  ? (la0 + la1) / 2
-                  : la0 +
-                    innerPad +
-                    ((la1 - la0 - 2 * innerPad) * i) /
-                      (tierProjects.length - 1);
+              const angle = lone
+                ? (la0 + la1) / 2
+                : la0 +
+                  innerPad +
+                  ((la1 - la0 - 2 * innerPad) * i) / (tierProjects.length - 1);
               const { x, y } = polar(radius, angle);
 
-              if (!laneTierAngles.has(tier)) laneTierAngles.set(tier, []);
-              laneTierAngles.get(tier)?.push(angle);
+              // Road: a lone node goes straight out; otherwise share the lane
+              // trunk then arc along the circle to the node.
+              const pathD = lone
+                ? new PolarPath(CENTER, CENTER)
+                    .moveTo(DONUT_OUTER, angle)
+                    .radialTo(radius)
+                    .toString()
+                : new PolarPath(CENTER, CENTER)
+                    .moveTo(DONUT_OUTER, la0)
+                    .radialTo(radius)
+                    .arcTo(angle)
+                    .toString();
 
               nodes.push({
                 key: `${reqKey}:${project.id}:${i}:${tier}`,
@@ -356,6 +356,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                 x,
                 y,
                 angle,
+                pathD,
                 shared: (titlesPerProject.get(project.id)?.size ?? 0) > 1,
               });
 
@@ -378,34 +379,6 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
               }
             });
           }
-
-          // Serpentine spine: snake through the lane's tiers (inner→outer),
-          // alternating direction so the lines zig-zag along the circle.
-          const usedTiers = [...laneTierAngles.keys()].sort((a, b) => a - b);
-          if (usedTiers.length > 0) {
-            const spine = new PolarPath(CENTER, CENTER);
-            let dir = 1;
-            usedTiers.forEach((tier, ti) => {
-              const angles = (laneTierAngles.get(tier) ?? [])
-                .slice()
-                .sort((a, b) => a - b);
-              const ordered = dir > 0 ? angles : angles.slice().reverse();
-              const radius = tierRadius(tier);
-              if (ti === 0) {
-                spine.moveTo(DONUT_OUTER, la0).radialTo(radius);
-              } else {
-                spine.radialTo(radius);
-              }
-              for (const a of ordered) spine.arcTo(a);
-              dir = -dir;
-            });
-            spines.push({
-              key: `${reqKey}:${type}`,
-              reqKey,
-              titleIndex,
-              d: spine.toString(),
-            });
-          }
         });
 
         requirements.push({
@@ -421,7 +394,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
       });
     });
 
-    return { nodes, children, requirements, spines, segments };
+    return { nodes, children, requirements, segments };
   }, [titles]);
 
   const completeByReq = useMemo(() => {
@@ -497,41 +470,38 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                 key={`req-${req.key}`}
                 d={annularSector(req.innerR, req.outerR, req.a0, req.a1)}
                 fill={complete ? color : "transparent"}
-                fillOpacity={complete ? 0.06 : 0}
+                fillOpacity={complete ? 0.03 : 0}
                 stroke={complete ? color : "currentColor"}
                 className={complete ? "" : "text-muted-foreground/25"}
-                strokeWidth={complete ? 3 : 1.5}
+                strokeWidth={complete ? 2 : 1.25}
                 opacity={dim ? 0.25 : 1}
                 style={
-                  complete ? { filter: `drop-shadow(0 0 6px ${color})` } : undefined
+                  complete ? { filter: `drop-shadow(0 0 3px ${color})` } : undefined
                 }
               />
             );
           })}
 
-          {/* Serpentine spines: zig-zag along the circle through the XP tiers. */}
-          {spines.map((s) => {
-            if (infoMode && s.titleIndex === selectedTitle) return null;
-            const complete = completeByReq[s.reqKey];
-            const color = SEGMENT_COLORS[s.titleIndex % SEGMENT_COLORS.length];
-            const dim =
-              (selectedTitle !== null && s.titleIndex !== selectedTitle) ||
-              selectedProject !== null;
+          {/* Roads: only drawn once a project is done (or simulated) — the map
+              fills in as you progress instead of always showing every line. */}
+          {nodes.map((n) => {
+            if (infoMode && n.titleIndex === selectedTitle) return null;
+            const validated = cursus.projects[n.projectId]?.is_validated ?? false;
+            const isPlanned = Boolean(planned[n.projectId]);
+            if (!validated && !isPlanned) return null;
+            const active = isActive(n.titleIndex, n.projectId);
+            const color = SEGMENT_COLORS[n.titleIndex % SEGMENT_COLORS.length];
             return (
               <path
-                key={`spine-${s.key}`}
-                d={s.d}
+                key={`road-${n.key}`}
+                d={n.pathD}
                 fill="none"
-                stroke={complete ? color : "currentColor"}
-                className={complete ? "" : "text-muted-foreground/25"}
-                strokeWidth={complete ? 2.5 : 1.5}
-                strokeOpacity={complete ? 0.6 : 1}
+                stroke={validated ? color : "#38bdf8"}
+                strokeWidth={2}
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                opacity={dim ? 0.12 : 1}
-                style={
-                  complete ? { filter: `drop-shadow(0 0 4px ${color})` } : undefined
-                }
+                strokeDasharray={validated ? undefined : "5 5"}
+                opacity={active ? (validated ? 0.6 : 0.5) : 0.1}
               />
             );
           })}
