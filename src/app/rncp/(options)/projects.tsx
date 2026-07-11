@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { useFortyTwoStore } from "@/providers/forty-two-store-provider";
-import { useRncpSimulationStore } from "@/providers/rncp-simulation-provider";
+import { usePlannedProjects } from "@/stores/planned-projects-store";
 import type { FortyTwoProject } from "@/types/forty-two";
 import {
   CircleCheck,
@@ -94,9 +94,9 @@ function Project({
   depth = 0,
 }: { project: FortyTwoProject; depth?: number }) {
   const { cursus } = useFortyTwoStore((state) => state);
-  const toggle = useRncpSimulationStore((state) => state.toggle);
-  const isSimulated = useRncpSimulationStore((state) =>
-    Boolean(state.simulated[project.id]),
+  const toggle = usePlannedProjects((state) => state.toggle);
+  const isSimulated = usePlannedProjects((state) =>
+    Boolean(state.planned[project.id]),
   );
 
   const isValidated = cursus.projects[project.id]?.is_validated ?? false;

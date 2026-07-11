@@ -17,6 +17,8 @@ import { DataTableBody } from "./(table)/table-body";
 import { TableAction } from "./(table)/table-actions";
 import { DataTableHeader, DataTableFooter } from "./(table)/table-decoration";
 import { FortyTwoStoreProvider } from "@/providers/forty-two-store-provider";
+import { PlannedProjectsSync } from "@/components/planned-projects-sync";
+import { CalculatorPlanSeed } from "./(project)/calculator-plan-seed";
 import type {
   FortyTwoCursus,
   FortyTwoLevel,
@@ -38,7 +40,9 @@ export function Calculator({
       levels={levels}
       projects={projects}
     >
+      <PlannedProjectsSync />
       <CalculatorStoreProvider>
+        <CalculatorPlanSeed />
         <CalculatorTable />
       </CalculatorStoreProvider>
     </FortyTwoStoreProvider>

@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CompletionBar } from "@/components/ui/completion-bar";
 import { useFortyTwoStore } from "@/providers/forty-two-store-provider";
-import { useRncpSimulationStore } from "@/providers/rncp-simulation-provider";
+import { usePlannedProjects } from "@/stores/planned-projects-store";
 import type {
   FortyTwoCursus,
   FortyTwoProject,
@@ -174,8 +174,8 @@ export function useTitleOptionProgress(
   option: FortyTwoTitleOption,
 ): TitleOptionProgress {
   const { cursus } = useFortyTwoStore((state) => state);
-  const simulated = useRncpSimulationStore((state) => state.simulated);
-  const isSimulated = (projectId: number) => Boolean(simulated[projectId]);
+  const planned = usePlannedProjects((state) => state.planned);
+  const isSimulated = (projectId: number) => Boolean(planned[projectId]);
 
   let projects = 0;
   let experience = 0;

@@ -1,10 +1,8 @@
 "use client";
 
+import { PlannedProjectsSync } from "@/components/planned-projects-sync";
 import { useFortyTwoStore } from "@/providers/forty-two-store-provider";
-import {
-  RncpSimulationStoreProvider,
-  useRncpSimulationStore,
-} from "@/providers/rncp-simulation-provider";
+import { usePlannedProjects } from "@/stores/planned-projects-store";
 import type { FortyTwoTitle } from "@/types/forty-two";
 import { useState } from "react";
 import { TitleOptions } from "./(options)/options";
@@ -39,7 +37,9 @@ export default function Titles() {
   }
 
   return (
-    <RncpSimulationStoreProvider>
+    <>
+      <PlannedProjectsSync />
+
       <TitleSelector
         titles={titles}
         activeTitle={activeTitle}
@@ -75,13 +75,13 @@ export default function Titles() {
         className="my-6"
       />
       <TitleOptions title={activeTitle} />
-    </RncpSimulationStoreProvider>
+    </>
   );
 }
 
 function ResetSimulationButton() {
-  const { simulated, clear } = useRncpSimulationStore((state) => state);
-  const count = Object.keys(simulated).length;
+  const { planned, clear } = usePlannedProjects((state) => state);
+  const count = Object.keys(planned).length;
 
   if (count === 0) {
     return null;
