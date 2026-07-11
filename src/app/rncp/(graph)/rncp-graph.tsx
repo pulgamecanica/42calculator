@@ -12,14 +12,14 @@ import { useMemo, useRef, useState } from "react";
 
 const SIZE = 1000;
 const CENTER = SIZE / 2;
-const DONUT_INNER = 78;
+const DONUT_INNER = 80;
 const DONUT_OUTER = 140;
-const SECTION_ARC = 158;
-const RING_BASE = 188;
-const RING_GAP = 46;
+const ANCHOR_R = 290;
 const NODE_R = 9;
-const NODE_ANGLE_STEP = 0.13; // spacing between nodes along a ring (rad)
-const PAN_LIMIT = 560;
+const MIN_R = 168; // keep nodes outside the donut
+const MAX_R = 478;
+const ITERATIONS = 220;
+const PAN_LIMIT = 600;
 
 const SEGMENT_COLORS = [
   "#f5c542",
@@ -30,28 +30,30 @@ const SEGMENT_COLORS = [
   "#f97316",
 ];
 
-interface GraphNode {
+interface Anchor {
   key: string;
+  titleIndex: number;
+  optionIndex: number;
+  color: string;
+  angle: number;
+  x: number;
+  y: number;
+}
+
+interface LayoutNode {
+  key: string;
+  anchorKey: string;
   titleIndex: number;
   projectId: number;
   name: string;
   x: number;
   y: number;
-  angle: number;
-  validated: boolean;
+  vx: number;
+  vy: number;
   shared: boolean;
 }
 
-interface GraphSection {
-  key: string;
-  titleIndex: number;
-  color: string;
-  a0: number;
-  a1: number;
-  complete: boolean;
-}
-
-interface GraphSegment {
+interface Segment {
   title: FortyTwoTitle;
   color: string;
   a0: number;
@@ -76,13 +78,6 @@ function annularSector(r0: number, r1: number, a0: number, a1: number): string {
   return `M ${p0o.x} ${p0o.y} A ${r1} ${r1} 0 ${large} 1 ${p1o.x} ${p1o.y} L ${p1i.x} ${p1i.y} A ${r0} ${r0} 0 ${large} 0 ${p0i.x} ${p0i.y} Z`;
 }
 
-function arcPath(radius: number, a0: number, a1: number): string {
-  const p0 = polar(radius, a0);
-  const p1 = polar(radius, a1);
-  const large = a1 - a0 > Math.PI ? 1 : 0;
-  return `M ${p0.x} ${p0.y} A ${radius} ${radius} 0 ${large} 1 ${p1.x} ${p1.y}`;
-}
-
 function isOptionComplete(
   option: FortyTwoTitleOption,
   cursus: FortyTwoCursus,
@@ -100,10 +95,10 @@ function isOptionComplete(
       experience += project.experience || 0;
     }
   }
-  const projectsMet = projects >= option.numberOfProjects;
-  const experienceMet =
-    option.experience === 0 || experience >= option.experience;
-  return projectsMet && experienceMet;
+  return (
+    projects >= option.numberOfProjects &&
+    (option.experience === 0 || experience >= option.experience)
+  );
 }
 
 export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
@@ -122,13 +117,13 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     moved: boolean;
   } | null>(null);
 
-  const { nodes, sections, segments } = useMemo(() => {
+  // Layout only depends on the (static) titles + cursus, NOT on `planned`, so
+  // toggling a project recolours without re-running the relaxation.
+  const { nodes, anchors, segments } = useMemo(() => {
     const count = titles.length || 1;
     const sweep = (Math.PI * 2) / count;
-    const titlePad = Math.min(0.06, sweep * 0.1);
-    const sectionGap = 0.025;
+    const titlePad = Math.min(0.08, sweep * 0.12);
 
-    // A project counts as "shared" when it appears in more than one title.
     const titlesPerProject = new Map<number, Set<number>>();
     titles.forEach((title, ti) => {
       for (const option of title.options) {
@@ -139,7 +134,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
       }
     });
 
-    const segments: GraphSegment[] = titles.map((title, i) => ({
+    const segments: Segment[] = titles.map((title, i) => ({
       title,
       color: SEGMENT_COLORS[i % SEGMENT_COLORS.length],
       a0: i * sweep,
@@ -147,80 +142,135 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
       mid: i * sweep + sweep / 2,
     }));
 
-    const nodes: GraphNode[] = [];
-    const sections: GraphSection[] = [];
+    const anchors: Anchor[] = [];
+    const nodes: LayoutNode[] = [];
 
     titles.forEach((title, titleIndex) => {
       const color = SEGMENT_COLORS[titleIndex % SEGMENT_COLORS.length];
       const t0 = titleIndex * sweep + titlePad;
       const t1 = (titleIndex + 1) * sweep - titlePad;
-
       const options = title.options;
-      const weights = options.map((o) =>
-        Math.max(1, Object.keys(o.projects).length),
-      );
-      const totalWeight = weights.reduce((a, b) => a + b, 0);
-      const available = t1 - t0 - sectionGap * Math.max(0, options.length - 1);
 
-      let cursor = t0;
       options.forEach((option, optionIndex) => {
-        const share = weights[optionIndex] / totalWeight;
-        const s0 = cursor;
-        const s1 = cursor + available * share;
-        cursor = s1 + sectionGap;
+        const angle =
+          options.length <= 1
+            ? (t0 + t1) / 2
+            : t0 + ((t1 - t0) * (optionIndex + 0.5)) / options.length;
+        const radius = ANCHOR_R + (optionIndex % 2) * 44;
+        const anchorPos = polar(radius, angle);
+        const anchorKey = `${titleIndex}:${optionIndex}`;
 
-        sections.push({
-          key: `${titleIndex}:${optionIndex}`,
+        anchors.push({
+          key: anchorKey,
           titleIndex,
+          optionIndex,
           color,
-          a0: s0,
-          a1: s1,
-          complete: isOptionComplete(option, cursus, planned),
+          angle,
+          x: anchorPos.x,
+          y: anchorPos.y,
         });
 
-        const projects = Object.values(option.projects);
-        const inPad = Math.min(0.02, (s1 - s0) * 0.15);
-        const perRing = Math.max(2, Math.round((s1 - s0 - 2 * inPad) / NODE_ANGLE_STEP));
-
-        let ring = 0;
-        let start = 0;
-        while (start < projects.length) {
-          const inThisRing = Math.min(perRing, projects.length - start);
-          const radius = RING_BASE + ring * RING_GAP;
-          for (let i = 0; i < inThisRing; i++) {
-            const project = projects[start + i];
-            const angle =
-              inThisRing <= 1
-                ? (s0 + s1) / 2
-                : s0 + inPad + ((s1 - s0 - 2 * inPad) * i) / (inThisRing - 1);
-            const { x, y } = polar(radius, angle);
-            nodes.push({
-              key: `${titleIndex}:${optionIndex}:${project.id}:${start + i}`,
-              titleIndex,
-              projectId: project.id,
-              name: project.name,
-              x,
-              y,
-              angle,
-              validated: cursus.projects[project.id]?.is_validated ?? false,
-              shared: (titlesPerProject.get(project.id)?.size ?? 0) > 1,
-            });
-          }
-          start += inThisRing;
-          ring += 1;
-        }
+        Object.values(option.projects).forEach((project, k) => {
+          // seed nodes in a small sunflower around their anchor
+          const t = k * 2.3999632;
+          const rr = 7 * Math.sqrt(k + 1);
+          nodes.push({
+            key: `${anchorKey}:${project.id}:${k}`,
+            anchorKey,
+            titleIndex,
+            projectId: project.id,
+            name: project.name,
+            x: anchorPos.x + rr * Math.cos(t),
+            y: anchorPos.y + rr * Math.sin(t),
+            vx: 0,
+            vy: 0,
+            shared: (titlesPerProject.get(project.id)?.size ?? 0) > 1,
+          });
+        });
       });
     });
 
-    return { nodes, sections, segments };
+    const anchorByKey = new Map(anchors.map((a) => [a.key, a]));
+    const minDist = 2 * NODE_R + 4;
+
+    for (let iter = 0; iter < ITERATIONS; iter++) {
+      // attract each node to its option anchor (grouping)
+      for (const n of nodes) {
+        const a = anchorByKey.get(n.anchorKey);
+        if (!a) continue;
+        n.vx += (a.x - n.x) * 0.03;
+        n.vy += (a.y - n.y) * 0.03;
+      }
+
+      // collision (no overlaps)
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const a = nodes[i];
+          const b = nodes[j];
+          let dx = b.x - a.x;
+          let dy = b.y - a.y;
+          let d = Math.hypot(dx, dy) || 0.01;
+          if (d < minDist) {
+            const push = (minDist - d) / 2;
+            dx /= d;
+            dy /= d;
+            a.x -= dx * push;
+            a.y -= dy * push;
+            b.x += dx * push;
+            b.y += dy * push;
+          }
+        }
+      }
+
+      // integrate + damping + radial bounds
+      for (const n of nodes) {
+        n.x += n.vx;
+        n.y += n.vy;
+        n.vx *= 0.8;
+        n.vy *= 0.8;
+        const dx = n.x - CENTER;
+        const dy = n.y - CENTER;
+        const r = Math.hypot(dx, dy) || 0.01;
+        if (r < MIN_R) {
+          n.x = CENTER + (dx / r) * MIN_R;
+          n.y = CENTER + (dy / r) * MIN_R;
+          n.vx = 0;
+          n.vy = 0;
+        } else if (r > MAX_R) {
+          n.x = CENTER + (dx / r) * MAX_R;
+          n.y = CENTER + (dy / r) * MAX_R;
+        }
+      }
+    }
+
+    return { nodes, anchors, segments };
+  }, [titles, cursus]);
+
+  const completeByAnchor = useMemo(() => {
+    const map: Record<string, boolean> = {};
+    titles.forEach((title, ti) => {
+      title.options.forEach((option, oi) => {
+        map[`${ti}:${oi}`] = isOptionComplete(option, cursus, planned);
+      });
+    });
+    return map;
   }, [titles, cursus, planned]);
+
+  const nodesByAnchor = useMemo(() => {
+    const map = new Map<string, LayoutNode[]>();
+    for (const n of nodes) {
+      if (!map.has(n.anchorKey)) map.set(n.anchorKey, []);
+      map.get(n.anchorKey)?.push(n);
+    }
+    return map;
+  }, [nodes]);
 
   const selectedNodes = selectedProject
     ? nodes.filter((n) => n.projectId === selectedProject)
     : [];
   const selectedName = selectedNodes[0]?.name;
 
-  const isActive = (n: GraphNode) =>
+  const isActive = (n: LayoutNode) =>
     (selectedProject === null && selectedTitle === null) ||
     n.projectId === selectedProject ||
     n.titleIndex === selectedTitle;
@@ -232,15 +282,8 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
   function onPointerDown(e: React.PointerEvent<SVGSVGElement>) {
     (e.target as Element).setPointerCapture?.(e.pointerId);
-    drag.current = {
-      px: e.clientX,
-      py: e.clientY,
-      ox: pan.x,
-      oy: pan.y,
-      moved: false,
-    };
+    drag.current = { px: e.clientX, py: e.clientY, ox: pan.x, oy: pan.y, moved: false };
   }
-
   function onPointerMove(e: React.PointerEvent<SVGSVGElement>) {
     if (!drag.current) return;
     const dx = e.clientX - drag.current.px;
@@ -248,12 +291,8 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     if (Math.abs(dx) + Math.abs(dy) > 3) drag.current.moved = true;
     const scale = SIZE / (e.currentTarget.clientWidth || SIZE);
     const clamp = (v: number) => Math.max(-PAN_LIMIT, Math.min(PAN_LIMIT, v));
-    setPan({
-      x: clamp(drag.current.ox + dx * scale),
-      y: clamp(drag.current.oy + dy * scale),
-    });
+    setPan({ x: clamp(drag.current.ox + dx * scale), y: clamp(drag.current.oy + dy * scale) });
   }
-
   function onPointerUp() {
     if (drag.current && !drag.current.moved) clearSelection();
     drag.current = null;
@@ -263,7 +302,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     <div className="relative w-full overflow-hidden rounded-lg border bg-card/20">
       <svg
         viewBox={`0 0 ${SIZE} ${SIZE}`}
-        className="h-[74vh] max-h-[860px] w-full cursor-grab touch-none select-none active:cursor-grabbing"
+        className="h-[74vh] max-h-[880px] w-full cursor-grab touch-none select-none active:cursor-grabbing"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -272,10 +311,62 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
         aria-label="RNCP certificates graph"
       >
         <g transform={`translate(${pan.x} ${pan.y})`}>
+          {/* Option "sections": stem donut→hub + hub→node links. */}
+          {anchors.map((a) => {
+            const stem = polar(DONUT_OUTER, a.angle);
+            const complete = completeByAnchor[a.key];
+            const dim = selectedTitle !== null && a.titleIndex !== selectedTitle;
+            const links = nodesByAnchor.get(a.key) ?? [];
+            return (
+              <g
+                key={`anchor-${a.key}`}
+                opacity={dim ? 0.15 : 1}
+              >
+                {links.map((n) => (
+                  <line
+                    key={`hublink-${n.key}`}
+                    x1={a.x}
+                    y1={a.y}
+                    x2={n.x}
+                    y2={n.y}
+                    stroke={complete ? a.color : "currentColor"}
+                    className={complete ? "" : "text-muted-foreground/15"}
+                    strokeOpacity={complete ? 0.35 : 1}
+                    strokeWidth={1.1}
+                  />
+                ))}
+                <line
+                  x1={stem.x}
+                  y1={stem.y}
+                  x2={a.x}
+                  y2={a.y}
+                  stroke={a.color}
+                  strokeWidth={complete ? 5 : 2.5}
+                  strokeOpacity={complete ? 0.9 : 0.4}
+                  style={
+                    complete ? { filter: `drop-shadow(0 0 5px ${a.color})` } : undefined
+                  }
+                />
+                <circle
+                  cx={a.x}
+                  cy={a.y}
+                  r={complete ? 9 : 6}
+                  fill={a.color}
+                  fillOpacity={complete ? 1 : 0.5}
+                  className="stroke-background"
+                  strokeWidth={2}
+                  style={
+                    complete ? { filter: `drop-shadow(0 0 6px ${a.color})` } : undefined
+                  }
+                />
+              </g>
+            );
+          })}
+
           {/* Links between every instance of the selected project. */}
           {selectedNodes.map((n) => (
             <line
-              key={`link-${n.key}`}
+              key={`sel-${n.key}`}
               x1={CENTER}
               y1={CENTER}
               x2={n.x}
@@ -285,53 +376,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
             />
           ))}
 
-          {/* Section base arcs (glow when the option is complete). */}
-          {sections.map((s) => {
-            const dim = selectedTitle !== null && s.titleIndex !== selectedTitle;
-            return (
-              <path
-                key={`section-${s.key}`}
-                d={arcPath(SECTION_ARC, s.a0, s.a1)}
-                fill="none"
-                stroke={s.complete ? s.color : "currentColor"}
-                className={cn(
-                  s.complete ? "text-foreground" : "text-muted-foreground/30",
-                )}
-                strokeWidth={s.complete ? 7 : 3}
-                strokeLinecap="round"
-                opacity={dim ? 0.25 : 1}
-                style={
-                  s.complete
-                    ? { filter: `drop-shadow(0 0 6px ${s.color})` }
-                    : undefined
-                }
-              />
-            );
-          })}
-
-          {/* Branches (section arc → node). */}
-          {nodes.map((n) => {
-            const edge = polar(SECTION_ARC, n.angle);
-            const active = isActive(n);
-            const sel = n.projectId === selectedProject;
-            return (
-              <line
-                key={`branch-${n.key}`}
-                x1={edge.x}
-                y1={edge.y}
-                x2={n.x}
-                y2={n.y}
-                className={cn(
-                  "stroke-muted-foreground/20",
-                  sel && "stroke-sky-400/70",
-                )}
-                strokeWidth={sel ? 2.5 : 1.25}
-                opacity={active ? 1 : 0.15}
-              />
-            );
-          })}
-
-          {/* Donut segments (one per certificate) — click to highlight a cert. */}
+          {/* Donut segments (certificates) — click to highlight. */}
           {segments.map((s, i) => {
             const labelPos = polar((DONUT_INNER + DONUT_OUTER) / 2, s.mid);
             const sel = selectedTitle === i;
@@ -351,9 +396,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                   fillOpacity={sel ? 1 : 0.85}
                   className="stroke-background"
                   strokeWidth={3}
-                  style={
-                    sel ? { filter: `drop-shadow(0 0 8px ${s.color})` } : undefined
-                  }
+                  style={sel ? { filter: `drop-shadow(0 0 8px ${s.color})` } : undefined}
                 />
                 <text
                   x={labelPos.x}
@@ -369,10 +412,11 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
             );
           })}
 
-          {/* Project nodes — click toggles simulation (unless already done). */}
+          {/* Project nodes — click toggles simulation + isolates across certs. */}
           {nodes.map((n) => {
             const sel = n.projectId === selectedProject;
             const active = isActive(n);
+            const validated = cursus.projects[n.projectId]?.is_validated ?? false;
             const isPlanned = Boolean(planned[n.projectId]);
             return (
               <g
@@ -382,15 +426,15 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                 onClick={() => {
                   setSelectedTitle(null);
                   setSelectedProject(n.projectId);
-                  if (!n.validated) toggle(n.projectId);
+                  if (!validated) toggle(n.projectId);
                 }}
                 className="cursor-pointer"
-                opacity={active ? 1 : 0.2}
+                opacity={active ? 1 : 0.18}
               >
                 <circle
                   r={sel ? NODE_R + 4 : NODE_R}
                   className={cn(
-                    n.validated
+                    validated
                       ? "fill-primary"
                       : isPlanned
                         ? "fill-sky-500"
@@ -408,7 +452,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
       {selectedName && (
         <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-full border bg-background/90 px-3 py-1 font-medium text-sm shadow-sm">
           {selectedName}
-          {selectedNodes.length > 1 && (
+          {new Set(selectedNodes.map((n) => n.titleIndex)).size > 1 && (
             <span className="ml-2 text-sky-500">
               in {new Set(selectedNodes.map((n) => n.titleIndex)).size} certs
             </span>
@@ -431,7 +475,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
           </span>
         ))}
         <span className="ml-auto text-muted-foreground">
-          drag to pan · click a cert or project · click a project to simulate it
+          drag to pan · click a cert or a project · click a project to simulate it
         </span>
       </div>
     </div>
