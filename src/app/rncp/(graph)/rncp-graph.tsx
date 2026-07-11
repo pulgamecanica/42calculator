@@ -687,10 +687,23 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
             />
           ))}
 
-          {/* Donut segments (certificates). */}
+          {/* Donut segments (certificates) with curved labels. */}
           {segments.map((s, i) => {
-            const labelPos = polar((DONUT_INNER + DONUT_OUTER) / 2, s.mid);
             const sel = selectedTitle === i;
+            const num = s.title.type.endsWith("7") ? 7 : 6;
+            const label = `RNCP ${num} · ${s.title.title}`;
+            const rLabel = (DONUT_INNER + DONUT_OUTER) / 2;
+            const pad = 0.04;
+            // reverse the arc for bottom-half segments so text stays upright
+            const bottom = Math.cos(s.mid) < 0;
+            const labelArc = bottom
+              ? arcPath(rLabel, s.a1 - pad, s.a0 + pad)
+              : arcPath(rLabel, s.a0 + pad, s.a1 - pad);
+            const arcLen = rLabel * (s.a1 - s.a0 - 2 * pad);
+            const fontSize = Math.max(
+              7,
+              Math.min(15, arcLen / (label.length * 0.52)),
+            );
             return (
               <g
                 key={`seg-${i}`}
@@ -718,15 +731,19 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                   strokeWidth={3}
                   style={sel ? { filter: `drop-shadow(0 0 8px ${s.color})` } : undefined}
                 />
+                <path id={`label-arc-${i}`} d={labelArc} fill="none" />
                 <text
-                  x={labelPos.x}
-                  y={labelPos.y}
-                  textAnchor="middle"
+                  fontSize={fontSize}
                   dominantBaseline="central"
-                  className="fill-black/80 font-bold"
-                  fontSize={26}
+                  className="fill-black/80 font-semibold"
                 >
-                  {i + 1}
+                  <textPath
+                    href={`#label-arc-${i}`}
+                    startOffset="50%"
+                    textAnchor="middle"
+                  >
+                    {label}
+                  </textPath>
                 </text>
               </g>
             );
@@ -939,7 +956,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
       </div>
 
       {/* Spread slider: separates the nodes (bigger graph) without zooming. */}
-      <div className="absolute top-32 right-3 flex flex-col items-center gap-1 rounded-md border bg-background/90 px-1.5 py-2 shadow-sm">
+      <div className="absolute right-3 bottom-14 flex flex-col items-center gap-1 rounded-md border bg-background/90 px-1.5 py-2 shadow-sm">
         <input
           type="range"
           min={0.6}
