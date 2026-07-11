@@ -65,8 +65,19 @@ interface GraphNode {
   x: number;
   y: number;
   angle: number;
-  pathD: string;
   shared: boolean;
+}
+
+/** An edge between two adjacent projects in a requirement's chain. Each end is
+ *  painted independently (half from A, half from B) so it only shows the parts
+ *  earned by completed projects. */
+interface Edge {
+  key: string;
+  titleIndex: number;
+  aId: number;
+  bId: number;
+  edgeAB: string; // path A -> B (draw first half = A's side)
+  edgeBA: string; // path B -> A (draw first half = B's side)
 }
 
 interface ChildNode {
@@ -238,7 +249,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
   // Deterministic layout: requirement boxes; inside, projects grouped by type
   // (angular lanes) and placed by XP tier (radial depth).
-  const { nodes, children, requirements, segments } = useMemo(() => {
+  const { nodes, children, requirements, edges, segments } = useMemo(() => {
     const count = titles.length || 1;
     const sweep = (Math.PI * 2) / count;
     const titlePad = Math.min(0.08, sweep * 0.1);
@@ -265,6 +276,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     const nodes: GraphNode[] = [];
     const children: ChildNode[] = [];
     const requirements: Requirement[] = [];
+    const edges: Edge[] = [];
 
     titles.forEach((title, titleIndex) => {
       const t0 = titleIndex * sweep + titlePad;
@@ -320,6 +332,13 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
             byTier.get(tier)?.push(p);
           }
 
+          const laneNodes: {
+            projectId: number;
+            tier: number;
+            angle: number;
+            radius: number;
+          }[] = [];
+
           for (const [tier, tierProjects] of byTier) {
             const radius = tierRadius(tier);
             outerR = Math.max(outerR, radius);
@@ -333,18 +352,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                   ((la1 - la0 - 2 * innerPad) * i) / (tierProjects.length - 1);
               const { x, y } = polar(radius, angle);
 
-              // Road: a lone node goes straight out; otherwise share the lane
-              // trunk then arc along the circle to the node.
-              const pathD = lone
-                ? new PolarPath(CENTER, CENTER)
-                    .moveTo(DONUT_OUTER, angle)
-                    .radialTo(radius)
-                    .toString()
-                : new PolarPath(CENTER, CENTER)
-                    .moveTo(DONUT_OUTER, la0)
-                    .radialTo(radius)
-                    .arcTo(angle)
-                    .toString();
+              laneNodes.push({ projectId: project.id, tier, angle, radius });
 
               nodes.push({
                 key: `${reqKey}:${project.id}:${i}:${tier}`,
@@ -356,7 +364,6 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                 x,
                 y,
                 angle,
-                pathD,
                 shared: (titlesPerProject.get(project.id)?.size ?? 0) > 1,
               });
 
@@ -379,6 +386,41 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
               }
             });
           }
+
+          // Chain the lane's nodes (serpentine order) into edges between
+          // adjacent projects. Each project paints only half of its edges.
+          const tiersSorted = [...new Set(laneNodes.map((n) => n.tier))].sort(
+            (a, b) => a - b,
+          );
+          const ordered: typeof laneNodes = [];
+          tiersSorted.forEach((tier, idx) => {
+            const tn = laneNodes
+              .filter((n) => n.tier === tier)
+              .sort((a, b) => a.angle - b.angle);
+            if (idx % 2 === 1) tn.reverse();
+            ordered.push(...tn);
+          });
+          for (let i = 0; i < ordered.length - 1; i++) {
+            const A = ordered[i];
+            const B = ordered[i + 1];
+            const pAB = new PolarPath(CENTER, CENTER).moveTo(A.radius, A.angle);
+            const pBA = new PolarPath(CENTER, CENTER).moveTo(B.radius, B.angle);
+            if (A.radius === B.radius) {
+              pAB.arcTo(B.angle);
+              pBA.arcTo(A.angle);
+            } else {
+              pAB.radialTo(B.radius).arcTo(B.angle);
+              pBA.arcTo(A.angle).radialTo(A.radius);
+            }
+            edges.push({
+              key: `${reqKey}:${type}:${i}`,
+              titleIndex,
+              aId: A.projectId,
+              bId: B.projectId,
+              edgeAB: pAB.toString(),
+              edgeBA: pBA.toString(),
+            });
+          }
         });
 
         requirements.push({
@@ -394,7 +436,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
       });
     });
 
-    return { nodes, children, requirements, segments };
+    return { nodes, children, requirements, edges, segments };
   }, [titles]);
 
   const completeByReq = useMemo(() => {
@@ -458,51 +500,133 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
         aria-label="RNCP certificates graph"
       >
         <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
-          {/* Requirement boxes (traced; outline glows when complete). */}
+          {/* Requirement outlines: full glowing box when complete, otherwise a
+              partial arc growing symmetrically with completion % (0% = none). */}
           {requirements.map((req) => {
+            const option = titles[req.titleIndex]?.options[req.optionIndex];
+            if (!option) return null;
             const complete = completeByReq[req.key];
             const color = SEGMENT_COLORS[req.titleIndex % SEGMENT_COLORS.length];
             const dim =
               (selectedTitle !== null && req.titleIndex !== selectedTitle) ||
               selectedProject !== null;
+
+            if (complete) {
+              return (
+                <g key={`req-${req.key}`}>
+                  <path
+                    id={`req-outline-${req.key}`}
+                    d={annularSector(req.innerR, req.outerR, req.a0, req.a1)}
+                    fill={color}
+                    fillOpacity={0.03}
+                    stroke={color}
+                    strokeWidth={2}
+                    opacity={dim ? 0.25 : 1}
+                    style={{ filter: `drop-shadow(0 0 3px ${color})` }}
+                  />
+                  {/* subtle light travelling the outline, then a small spark */}
+                  {!dim && (
+                    <circle r={3.5} fill={color}>
+                      <animateMotion
+                        dur="6s"
+                        repeatCount="indefinite"
+                        rotate="auto"
+                        keyPoints="0;1"
+                        keyTimes="0;1"
+                        calcMode="linear"
+                      >
+                        <mpath href={`#req-outline-${req.key}`} />
+                      </animateMotion>
+                      <animate
+                        attributeName="opacity"
+                        values="0;1;1;0.2;1;0"
+                        keyTimes="0;0.05;0.9;0.94;0.97;1"
+                        dur="6s"
+                        repeatCount="indefinite"
+                      />
+                      <animate
+                        attributeName="r"
+                        values="3.5;3.5;3.5;6;2;3.5"
+                        keyTimes="0;0.05;0.9;0.94;0.97;1"
+                        dur="6s"
+                        repeatCount="indefinite"
+                      />
+                    </circle>
+                  )}
+                </g>
+              );
+            }
+
+            // incomplete: partial outer arc by completion percentage
+            const projFrac = Math.min(
+              1,
+              (optionProgress(option, cursus, planned).projects +
+                optionProgress(option, cursus, planned).simulatedProjects) /
+                (option.numberOfProjects || 1),
+            );
+            const prog = optionProgress(option, cursus, planned);
+            const xpFrac =
+              option.experience > 0
+                ? Math.min(
+                    1,
+                    (prog.experience + prog.simulatedExperience) /
+                      option.experience,
+                  )
+                : 1;
+            const frac = Math.min(projFrac, xpFrac);
+            if (frac <= 0.001) return null;
+            const mid = (req.a0 + req.a1) / 2;
+            const halfSpan = ((req.a1 - req.a0) * frac) / 2;
             return (
               <path
                 key={`req-${req.key}`}
-                d={annularSector(req.innerR, req.outerR, req.a0, req.a1)}
-                fill={complete ? color : "transparent"}
-                fillOpacity={complete ? 0.03 : 0}
-                stroke={complete ? color : "currentColor"}
-                className={complete ? "" : "text-muted-foreground/25"}
-                strokeWidth={complete ? 2 : 1.25}
-                opacity={dim ? 0.25 : 1}
-                style={
-                  complete ? { filter: `drop-shadow(0 0 3px ${color})` } : undefined
-                }
+                d={arcPath(req.outerR, mid - halfSpan, mid + halfSpan)}
+                fill="none"
+                stroke={color}
+                strokeWidth={2}
+                strokeLinecap="round"
+                opacity={dim ? 0.25 : 0.7}
               />
             );
           })}
 
-          {/* Roads: only drawn once a project is done (or simulated) — the map
-              fills in as you progress instead of always showing every line. */}
-          {nodes.map((n) => {
-            if (infoMode && n.titleIndex === selectedTitle) return null;
-            const validated = cursus.projects[n.projectId]?.is_validated ?? false;
-            const isPlanned = Boolean(planned[n.projectId]);
-            if (!validated && !isPlanned) return null;
-            const active = isActive(n.titleIndex, n.projectId);
-            const color = SEGMENT_COLORS[n.titleIndex % SEGMENT_COLORS.length];
+          {/* Edges between adjacent projects. Each end paints only its half,
+              so a road is complete only when both projects are done. */}
+          {edges.map((e) => {
+            if (infoMode && e.titleIndex === selectedTitle) return null;
+            const color = SEGMENT_COLORS[e.titleIndex % SEGMENT_COLORS.length];
+            const half = (
+              d: string,
+              projectId: number,
+              side: string,
+            ) => {
+              const validated =
+                cursus.projects[projectId]?.is_validated ?? false;
+              const isPlanned = Boolean(planned[projectId]);
+              if (!validated && !isPlanned) return null;
+              const active =
+                selectedProject === null ||
+                selectedProject === projectId ||
+                selectedTitle === e.titleIndex;
+              return (
+                <path
+                  key={`${e.key}-${side}`}
+                  d={d}
+                  fill="none"
+                  pathLength={1}
+                  stroke={validated ? color : "#38bdf8"}
+                  strokeWidth={2.5}
+                  strokeLinecap="round"
+                  strokeDasharray="0.5 1"
+                  opacity={active ? (validated ? 0.75 : 0.55) : 0.1}
+                />
+              );
+            };
             return (
-              <path
-                key={`road-${n.key}`}
-                d={n.pathD}
-                fill="none"
-                stroke={validated ? color : "#38bdf8"}
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeDasharray={validated ? undefined : "5 5"}
-                opacity={active ? (validated ? 0.6 : 0.5) : 0.1}
-              />
+              <g key={`edge-${e.key}`}>
+                {half(e.edgeAB, e.aId, "a")}
+                {half(e.edgeBA, e.bId, "b")}
+              </g>
             );
           })}
 
