@@ -750,8 +750,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
             );
           })}
 
-          {/* Info mode: replace the focused cert's projects with requirement
-              gauges (completed + simulated) and their names. */}
+          {/* Info mode, pass 1: all requirement gauges. */}
           {infoMode &&
             requirements
               .filter((req) => req.titleIndex === selectedTitle)
@@ -780,8 +779,6 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                         (prog.experience + prog.simulatedExperience) / needX,
                       )
                     : 0;
-
-                const namePos = polar(306, (a0 + a1) / 2);
 
                 const gauge = (
                   radius: number,
@@ -819,9 +816,28 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                 );
 
                 return (
-                  <g key={`info-${req.key}`}>
+                  <g key={`info-gauge-${req.key}`}>
                     {gauge(258, realP, simP, `gp-${req.key}`)}
                     {needX > 0 && gauge(222, realX, simX, `gx-${req.key}`)}
+                  </g>
+                );
+              })}
+
+          {/* Info mode, pass 2: requirement text, rendered above EVERY gauge. */}
+          {infoMode &&
+            requirements
+              .filter((req) => req.titleIndex === selectedTitle)
+              .map((req) => {
+                const option = titles[req.titleIndex]?.options[req.optionIndex];
+                if (!option) return null;
+                const prog = optionProgress(option, cursus, planned);
+                const color =
+                  SEGMENT_COLORS[req.titleIndex % SEGMENT_COLORS.length];
+                const needX = option.experience;
+                const namePos = polar(306, (req.a0 + req.a1) / 2);
+
+                return (
+                  <g key={`info-text-${req.key}`}>
                     {prog.isComplete && (
                       <text
                         x={namePos.x}
@@ -840,6 +856,10 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                       y={namePos.y}
                       textAnchor="middle"
                       dominantBaseline="central"
+                      paintOrder="stroke"
+                      stroke="var(--color-background)"
+                      strokeWidth={5}
+                      strokeLinejoin="round"
                       className="fill-foreground font-semibold"
                       fontSize={22}
                     >
@@ -850,6 +870,10 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
                       y={namePos.y + 24}
                       textAnchor="middle"
                       dominantBaseline="central"
+                      paintOrder="stroke"
+                      stroke="var(--color-background)"
+                      strokeWidth={4}
+                      strokeLinejoin="round"
                       className="fill-muted-foreground"
                       fontSize={15}
                     >
