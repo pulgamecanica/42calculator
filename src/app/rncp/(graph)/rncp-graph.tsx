@@ -10,8 +10,14 @@ import type {
   FortyTwoTitleOption,
 } from "@/types/forty-two";
 import { Minus, Plus, Scan } from "lucide-react";
+import { JetBrains_Mono } from "next/font/google";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PolarPath } from "./polar-path";
+
+const mono = JetBrains_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "700"],
+});
 
 const SIZE = 1000;
 const CENTER = SIZE / 2;
@@ -520,11 +526,19 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
   }
 
   return (
-    <div className="relative w-full overflow-hidden rounded-lg border bg-card/20">
+    <div
+      className={cn(
+        mono.className,
+        "relative w-full overflow-hidden rounded-lg border bg-card/20",
+      )}
+    >
       <svg
         ref={svgRef}
         viewBox={`0 0 ${SIZE} ${SIZE}`}
-        className="h-[74vh] max-h-[880px] w-full cursor-grab touch-none select-none active:cursor-grabbing"
+        className={cn(
+          mono.className,
+          "h-[74vh] max-h-[880px] w-full cursor-grab touch-none select-none active:cursor-grabbing",
+        )}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
