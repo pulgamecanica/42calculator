@@ -13,7 +13,12 @@ export async function getFortyTwoCursus(): Promise<FortyTwoCursus | undefined> {
     // This runs during Server Component render, so we cannot mutate cookies
     // here (e.g. via signOut()). Fail gracefully and let the caller render
     // without a cursus instead of crashing the page.
-    process.stderr.write(`Error getting cursus: ${error}\n`);
+    process.stderr.write(
+      `[cursus] Could not reach the KV store at ${process.env.KV_REST_API_URL} ` +
+        `while reading cursus for "${session?.user.login}". ` +
+        `Verify KV_REST_API_URL is reachable from this container (not localhost) ` +
+        `and KV_REST_API_TOKEN matches the proxy. Cause: ${error}\n`,
+    );
   }
 
   return cursus;

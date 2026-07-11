@@ -37,7 +37,11 @@ const providers: Provider[] = [
       } catch (error) {
         // Don't block sign-in if the cursus can't be fetched or stored; the UI
         // falls back to defaults until the data becomes available.
-        console.error(`Error storing cursus on sign-in: ${error}`);
+        console.error(
+          `[auth] Could not store cursus for "${profile.login}". ` +
+            `Verify KV_REST_API_URL (${process.env.KV_REST_API_URL}) is reachable ` +
+            `from this container and KV_REST_API_TOKEN matches the proxy. Cause: ${error}`,
+        );
       }
 
       return {
