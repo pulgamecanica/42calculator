@@ -5,20 +5,19 @@ import { useFortyTwoStore } from "@/providers/forty-two-store-provider";
 import { usePlannedProjects } from "@/stores/planned-projects-store";
 import type {
   FortyTwoCursus,
+  FortyTwoProject,
   FortyTwoTitle,
   FortyTwoTitleOption,
 } from "@/types/forty-two";
 import { Minus, Plus, Scan } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { PolarPath } from "./polar-path";
 
 const SIZE = 1000;
 const CENTER = SIZE / 2;
 const DONUT_INNER = 80;
 const DONUT_OUTER = 138;
-const LEVEL_BASE = 176;
-const LEVEL_GAP = 48;
-const SLOT = 0.07; // angular spacing between nodes on a level (rad)
+const TIER_BASE = 184; // radius of XP tier 0
+const TIER_GAP = 50; // radius added per XP tier (depth = XP)
 const NODE_R = 8;
 const CHILD_R = 4;
 const PAN_LIMIT = 600;
@@ -34,34 +33,56 @@ const SEGMENT_COLORS = [
   "#f97316",
 ];
 
-const levelRadius = (level: number) => LEVEL_BASE + level * LEVEL_GAP;
+const TYPE_ORDER = ["project", "piscine", "exam"] as const;
+type ProjectType = (typeof TYPE_ORDER)[number];
+
+function projectType(project: FortyTwoProject): ProjectType {
+  const s = project.name.toLowerCase();
+  if (s.includes("piscine")) return "piscine";
+  if (s.includes("exam")) return "exam";
+  return "project";
+}
+
+/** XP tiers → radial depth. Higher XP sits further out. Shared across certs. */
+function xpTier(xp: number): number {
+  if (xp <= 0) return 0;
+  if (xp <= 5000) return 1;
+  if (xp <= 10000) return 2;
+  if (xp <= 15000) return 3;
+  if (xp <= 21000) return 4;
+  return 5;
+}
+const tierRadius = (tier: number) => TIER_BASE + tier * TIER_GAP;
 
 interface GraphNode {
   key: string;
-  anchorKey: string;
+  reqKey: string;
   titleIndex: number;
   projectId: number;
   name: string;
+  type: ProjectType;
   x: number;
   y: number;
+  angle: number;
   shared: boolean;
 }
 
 interface ChildNode {
   key: string;
   titleIndex: number;
-  name: string;
   x: number;
   y: number;
   px: number;
   py: number;
 }
 
-interface Spine {
+interface Requirement {
   key: string;
-  anchorKey: string;
   titleIndex: number;
-  d: string;
+  a0: number;
+  a1: number;
+  innerR: number;
+  outerR: number;
 }
 
 interface Segment {
@@ -159,8 +180,6 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     setZoom(z1);
   };
 
-  // Native wheel listener (non-passive) so we can zoom toward the cursor
-  // without scrolling the page.
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
@@ -179,13 +198,13 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Deterministic (idempotent) grid layout — depends only on the static
-  // titles/cursus, so toggling a project only recolours.
-  const { nodes, children, spines, segments } = useMemo(() => {
+  // Deterministic layout: requirement boxes; inside, projects grouped by type
+  // (angular lanes) and placed by XP tier (radial depth).
+  const { nodes, children, requirements, segments } = useMemo(() => {
     const count = titles.length || 1;
     const sweep = (Math.PI * 2) / count;
     const titlePad = Math.min(0.08, sweep * 0.1);
-    const sectionGap = 0.02;
+    const sectionGap = 0.03;
 
     const titlesPerProject = new Map<number, Set<number>>();
     titles.forEach((title, ti) => {
@@ -207,7 +226,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
 
     const nodes: GraphNode[] = [];
     const children: ChildNode[] = [];
-    const spines: Spine[] = [];
+    const requirements: Requirement[] = [];
 
     titles.forEach((title, titleIndex) => {
       const t0 = titleIndex * sweep + titlePad;
@@ -226,84 +245,106 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
         const s1 = cursor + available * share;
         cursor = s1 + sectionGap;
 
-        const anchorKey = `${titleIndex}:${optionIndex}`;
-        const pad = Math.min(0.015, (s1 - s0) * 0.12);
-        const trunkStart = s0 + pad;
-        const usable = s1 - s0 - 2 * pad;
-        const perLevel = Math.max(1, Math.floor(usable / SLOT));
-        const slotAngle = (slot: number) => trunkStart + SLOT * (slot + 0.5);
-
+        const reqKey = `${titleIndex}:${optionIndex}`;
         const projects = Object.values(option.projects);
-        const total = projects.length;
-        const levels = Math.ceil(total / perLevel) || 1;
 
-        // Nodes on a left-aligned polar grid (shared levels + columns).
-        projects.forEach((project, k) => {
-          const level = Math.floor(k / perLevel);
-          const slot = k % perLevel;
-          const radius = levelRadius(level);
-          const angle = slotAngle(slot);
-          const { x, y } = polar(radius, angle);
+        // group by project type → angular lanes within the requirement
+        const byType = new Map<ProjectType, FortyTwoProject[]>();
+        for (const p of projects) {
+          const type = projectType(p);
+          if (!byType.has(type)) byType.set(type, []);
+          byType.get(type)?.push(p);
+        }
+        const types = TYPE_ORDER.filter((t) => byType.has(t));
 
-          nodes.push({
-            key: `${anchorKey}:${project.id}:${k}`,
-            anchorKey,
-            titleIndex,
-            projectId: project.id,
-            name: project.name,
-            x,
-            y,
-            shared: (titlesPerProject.get(project.id)?.size ?? 0) > 1,
-          });
+        const lanePad = Math.min(0.012, (s1 - s0) * 0.06);
+        const laneGap = 0.012;
+        const laneAvail =
+          s1 - s0 - 2 * lanePad - laneGap * Math.max(0, types.length - 1);
+        const totalCount = Math.max(1, projects.length);
 
-          // A piscine / parent project: render its children as a small
-          // connected sub-cluster just outside the node.
-          const kids = project.children ?? [];
-          if (kids.length > 0) {
-            const spread = SLOT * 0.9;
-            kids.forEach((child, ci) => {
-              const ca =
-                angle - spread / 2 + (spread * (ci + 0.5)) / kids.length;
-              const cp = polar(radius + LEVEL_GAP * 0.5, ca);
-              children.push({
-                key: `${anchorKey}:${project.id}:${k}:c${child.id}:${ci}`,
+        let laneCursor = s0 + lanePad;
+        let outerR = TIER_BASE;
+
+        types.forEach((type) => {
+          const laneProjects = (byType.get(type) ?? [])
+            .slice()
+            .sort((a, b) => (b.experience || 0) - (a.experience || 0));
+          const la0 = laneCursor;
+          const la1 = laneCursor + laneAvail * (laneProjects.length / totalCount);
+          laneCursor = la1 + laneGap;
+
+          // group lane projects by XP tier (same tier → same radius)
+          const byTier = new Map<number, FortyTwoProject[]>();
+          for (const p of laneProjects) {
+            const tier = xpTier(p.experience || 0);
+            if (!byTier.has(tier)) byTier.set(tier, []);
+            byTier.get(tier)?.push(p);
+          }
+
+          for (const [tier, tierProjects] of byTier) {
+            const radius = tierRadius(tier);
+            outerR = Math.max(outerR, radius);
+            const innerPad = Math.min(0.008, (la1 - la0) * 0.12);
+            tierProjects.forEach((project, i) => {
+              const angle =
+                tierProjects.length <= 1
+                  ? (la0 + la1) / 2
+                  : la0 +
+                    innerPad +
+                    ((la1 - la0 - 2 * innerPad) * i) /
+                      (tierProjects.length - 1);
+              const { x, y } = polar(radius, angle);
+
+              nodes.push({
+                key: `${reqKey}:${project.id}:${i}:${tier}`,
+                reqKey,
                 titleIndex,
-                name: child.name,
-                x: cp.x,
-                y: cp.y,
-                px: x,
-                py: y,
+                projectId: project.id,
+                name: project.name,
+                type,
+                x,
+                y,
+                angle,
+                shared: (titlesPerProject.get(project.id)?.size ?? 0) > 1,
               });
+
+              const kids = project.children ?? [];
+              if (kids.length > 0) {
+                const spread = Math.min(0.06, (la1 - la0) * 0.6);
+                kids.forEach((child, ci) => {
+                  const ca =
+                    angle - spread / 2 + (spread * (ci + 0.5)) / kids.length;
+                  const cp = polar(radius + TIER_GAP * 0.5, ca);
+                  children.push({
+                    key: `${reqKey}:${project.id}:${child.id}:${ci}`,
+                    titleIndex,
+                    x: cp.x,
+                    y: cp.y,
+                    px: x,
+                    py: y,
+                  });
+                });
+              }
             });
           }
         });
 
-        // Serpentine spine: snake out level by level, alternating direction.
-        const spine = new PolarPath(CENTER, CENTER)
-          .moveTo(DONUT_OUTER, slotAngle(0))
-          .radialTo(levelRadius(0));
-        for (let level = 0; level < levels; level++) {
-          const countL = Math.min(perLevel, total - level * perLevel);
-          const order: number[] = [];
-          for (let j = 0; j < countL; j++) order.push(j);
-          if (level % 2 === 1) order.reverse();
-          if (level > 0) spine.radialTo(levelRadius(level));
-          for (const slot of order) spine.arcTo(slotAngle(slot));
-        }
-
-        spines.push({
-          key: anchorKey,
-          anchorKey,
+        requirements.push({
+          key: reqKey,
           titleIndex,
-          d: spine.toString(),
+          a0: s0,
+          a1: s1,
+          innerR: DONUT_OUTER + 6,
+          outerR: outerR + 24,
         });
       });
     });
 
-    return { nodes, children, spines, segments };
+    return { nodes, children, requirements, segments };
   }, [titles]);
 
-  const completeByAnchor = useMemo(() => {
+  const completeByReq = useMemo(() => {
     const map: Record<string, boolean> = {};
     titles.forEach((title, ti) => {
       title.options.forEach((option, oi) => {
@@ -318,16 +359,15 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
     : [];
   const selectedName = selectedNodes[0]?.name;
 
-  const isActive = (n: GraphNode) =>
+  const isActive = (titleIndex: number, projectId: number) =>
     (selectedProject === null && selectedTitle === null) ||
-    n.projectId === selectedProject ||
-    n.titleIndex === selectedTitle;
+    projectId === selectedProject ||
+    titleIndex === selectedTitle;
 
   function clearSelection() {
     setSelectedProject(null);
     setSelectedTitle(null);
   }
-
   function onPointerDown(e: React.PointerEvent<SVGSVGElement>) {
     (e.target as Element).setPointerCapture?.(e.pointerId);
     drag.current = { px: e.clientX, py: e.clientY, ox: pan.x, oy: pan.y, moved: false };
@@ -364,33 +404,53 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
         aria-label="RNCP certificates graph"
       >
         <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
-          {/* Serpentine spine per option (snakes out level by level). */}
-          {spines.map((s) => {
-            const complete = completeByAnchor[s.anchorKey];
+          {/* Requirement boxes (traced; outline glows when complete). */}
+          {requirements.map((req) => {
+            const complete = completeByReq[req.key];
+            const color = SEGMENT_COLORS[req.titleIndex % SEGMENT_COLORS.length];
             const dim =
-              (selectedTitle !== null && s.titleIndex !== selectedTitle) ||
+              (selectedTitle !== null && req.titleIndex !== selectedTitle) ||
               selectedProject !== null;
-            const color = SEGMENT_COLORS[s.titleIndex % SEGMENT_COLORS.length];
             return (
               <path
-                key={`spine-${s.key}`}
-                d={s.d}
-                fill="none"
+                key={`req-${req.key}`}
+                d={annularSector(req.innerR, req.outerR, req.a0, req.a1)}
+                fill={complete ? color : "transparent"}
+                fillOpacity={complete ? 0.06 : 0}
                 stroke={complete ? color : "currentColor"}
                 className={complete ? "" : "text-muted-foreground/25"}
                 strokeWidth={complete ? 3 : 1.5}
-                strokeOpacity={complete ? 0.55 : 1}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                opacity={dim ? 0.12 : 1}
+                opacity={dim ? 0.25 : 1}
                 style={
-                  complete ? { filter: `drop-shadow(0 0 4px ${color})` } : undefined
+                  complete ? { filter: `drop-shadow(0 0 6px ${color})` } : undefined
                 }
               />
             );
           })}
 
-          {/* Piscine children (sub-projects). */}
+          {/* Radial connectors (branch stems) from the box base to each node. */}
+          {nodes.map((n) => {
+            const base = polar(DONUT_OUTER + 6, n.angle);
+            const active = isActive(n.titleIndex, n.projectId);
+            const sel = n.projectId === selectedProject;
+            return (
+              <line
+                key={`stem-${n.key}`}
+                x1={base.x}
+                y1={base.y}
+                x2={n.x}
+                y2={n.y}
+                className={cn(
+                  "stroke-muted-foreground/20",
+                  sel && "stroke-sky-400/70",
+                )}
+                strokeWidth={sel ? 2 : 1}
+                opacity={active ? 1 : 0.12}
+              />
+            );
+          })}
+
+          {/* Piscine children. */}
           {children.map((c) => {
             const dim =
               (selectedTitle !== null && c.titleIndex !== selectedTitle) ||
@@ -432,7 +492,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
             />
           ))}
 
-          {/* Donut segments (certificates) — click to highlight. */}
+          {/* Donut segments (certificates). */}
           {segments.map((s, i) => {
             const labelPos = polar((DONUT_INNER + DONUT_OUTER) / 2, s.mid);
             const sel = selectedTitle === i;
@@ -471,7 +531,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
           {/* Project nodes. */}
           {nodes.map((n) => {
             const sel = n.projectId === selectedProject;
-            const active = isActive(n);
+            const active = isActive(n.titleIndex, n.projectId);
             const validated = cursus.projects[n.projectId]?.is_validated ?? false;
             const isPlanned = Boolean(planned[n.projectId]);
             return (
@@ -560,7 +620,7 @@ export function RncpGraph({ titles }: { titles: FortyTwoTitle[] }) {
           </span>
         ))}
         <span className="ml-auto text-muted-foreground">
-          drag to pan · click a cert or a project · click a project to simulate it
+          scroll to zoom · drag to pan · click a project to simulate it
         </span>
       </div>
     </div>
